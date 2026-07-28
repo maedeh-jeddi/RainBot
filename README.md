@@ -1,18 +1,25 @@
-# pickplace_arm — autonomous mobile pick-and-place
+# RainBot — an autonomous mobile manipulator for pick-and-place
 
-A **Clearpath Husky A200** mobile base carrying a **Franka Emika FR3** 7-DOF arm
-with a **Franka Hand** gripper, simulated in ROS 2 Humble + Gazebo Harmonic.
+**RainBot** is a mobile manipulator: a **Clearpath Husky A200** mobile base
+carrying a **Franka Emika FR3** 7-DOF arm with a **Franka Hand** gripper,
+simulated in ROS 2 Humble + Gazebo Harmonic. Pairing a full arm with a mobile
+base means RainBot isn't limited to whatever is within reach of a fixed
+pedestal — it can navigate a whole warehouse floor and manipulate objects
+wherever they are, which is exactly what pick-and-place work in the real world
+demands: the parts, bins and drop-off points are rarely all next to each other.
 
 <!-- Drop the file at docs/images/banner.gif -- see docs/images/README.md -->
 ![Pick-and-place mission](docs/images/banner.gif)
 
-The robot runs one complete autonomous mission end to end: it localizes itself
+RainBot runs one complete autonomous mission end to end: it localizes itself
 on a saved map of a warehouse, drives to a table, picks three coloured cubes off
 it one at a time using its front camera, carries each across the room, places it
 on the matching-coloured column, verifies the placement actually landed, and
-parks.
+parks. The same mobility that lets it reach the table also lets it carry each
+cube anywhere else in the mapped space — this mission is one example of the
+class of mobile pick-and-place tasks the platform is built for.
 
-Everything the robot needs is in this repository. There are no external
+Everything RainBot needs is in this repository. There are no external
 description packages to clone.
 
 ---
@@ -232,8 +239,10 @@ and `mission_2.py` are all still imported at runtime. They are **not** dead code
 
 ## The robot
 
-`base_link` is the Husky A200 chassis origin and the kinematic root, sitting
-**0.13228 m** above the floor (`wheel_radius − wheel_vertical_offset`).
+RainBot pairs a mobile base with an arm so it can go to the work rather than
+waiting for the work to come to it. `base_link` is the Husky A200 chassis
+origin and the kinematic root, sitting **0.13228 m** above the floor
+(`wheel_radius − wheel_vertical_offset`).
 
 ### Kinematics
 
@@ -625,6 +634,7 @@ colcon build --packages-select <pkg> --symlink-install
 - [x] Self-contained workspace — no external description packages
 - [ ] Multi-robot / fleet operation
 - [ ] Real-hardware bring-up
+- [ ] General-purpose mobile pick-and-place beyond the colour-sorting demo
 
 ---
 
