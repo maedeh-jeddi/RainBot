@@ -82,7 +82,7 @@ nothing extra to clone.
 variable at configure time, so it **must** be set before building:
 
 ```bash
-cd ~/arm_ws
+cd ~/RainBot
 export GZ_VERSION=harmonic
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
@@ -105,7 +105,7 @@ A clean build of all five packages takes roughly 15 seconds.
 ## Run the mission
 
 ```bash
-cd ~/arm_ws
+cd ~/RainBot
 export GZ_VERSION=harmonic
 source install/setup.bash
 ros2 launch pickplace_arm_bringup mission_pickPlace.launch.py
@@ -177,7 +177,7 @@ Typical verified output:
 ## Repository layout
 
 ```
-arm_ws/
+RainBot/
 ├── README.md
 └── src/
     ├── pickplace_arm_description/      # the robot, the worlds, the props
