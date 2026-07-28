@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  FastDDS profile: UDPv4 only, shared-memory transport disabled.
+
+  With the default (SHM + UDP) transport this workspace intermittently fails to
+  start: a participant hits
+
+      RTPS_TRANSPORT_SHM Error: Failed init_port fastrtps_port<N>:
+      open_and_lock_file failed
+
+  and then never discovers its topics. When that lands on the robot-spawn node
+  it sits in "Waiting messages on topic [/robot_description]" forever, so the
+  robot is never spawned, the controllers never come up, there is no /odom, the
+  EKF publishes no odom->base_link, and the mission aborts with
+  "no map->base_link TF -- is AMCL running?" (which misattributes it to AMCL).
+
+  Disabling SHM removes that failure mode entirely. Everything here is on one
+  host over loopback, so the throughput cost is not a concern.
+-->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>udp_only_transport</transport_id>
+        <type>UDPv4</type>
+      </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="udp_only_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>udp_only_transport</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

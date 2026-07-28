@@ -1,0 +1,35 @@
+# --- colcon / ament build artifacts -----------------------------------------
+build/
+install/
+log/
+*.egg-info/
+.catkin_tools/
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# --- Editor / IDE / OS -------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Local tooling -----------------------------------------------------------
+.claude/
+
+# --- Patch, backup and crash leftovers ---------------------------------------
+*.orig
+*.rej
+*.bak
+*.backup
+core
+core.*
+
+# --- Simulation runtime output ------------------------------------------------
+*.gzstate
+*.gzlog

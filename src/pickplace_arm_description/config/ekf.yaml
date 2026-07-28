@@ -1,0 +1,50 @@
+# robot_localization EKF: fuses the diff_drive wheel odometry with the IMU to
+# produce a stable odom -> base_link estimate. The 4-wheel skid-steer's
+# wheel-only heading drifts badly (lateral scrub during turns), which distorts
+# the SLAM map; taking heading/yaw-rate from the IMU instead fixes that.
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: true
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true            # planar robot: zero out z/roll/pitch
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    # Wheel odometry: trust its body-frame forward velocity (vx) only. Its
+    # heading/yaw-rate are unreliable on a skid-steer, so leave them to the IMU.
+    odom0: /diff_drive_controller/odom
+    #               x     y     z     roll  pitch yaw   vx    vy    vz    vr    vp    vyaw  ax ay az
+    odom0_config: [false,false,false, false,false,false, true,false,false, false,false,false, false,false,false]
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # IMU: provides absolute yaw and yaw rate to anchor heading.
+    imu0: /imu
+    #              x     y     z     roll  pitch yaw   vx    vy    vz    vr    vp    vyaw  ax ay az
+    imu0_config: [false,false,false, false,false,true, false,false,false, false,false,true, false,false,false]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+
+    process_noise_covariance: [
+      0.02, 0.0,0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0, 0.02, 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0, 0.01, 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0, 0.01, 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0, 0.01, 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0, 0.02, 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0, 0.02, 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0.02, 0.0,0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0.01, 0.0,0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0.01, 0.0,0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0.01, 0.0,0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0.02, 0.0,0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0.01, 0.0,0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0.01, 0.0,
+      0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0.01]

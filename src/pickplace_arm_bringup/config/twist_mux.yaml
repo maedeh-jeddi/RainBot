@@ -1,0 +1,16 @@
+# Arbitrates the wheel command topic between Nav2 and the pick node's own
+# search/servo motion. Higher priority wins while its input is fresh.
+# Output is remapped (in nav2.launch.py) to the diff_drive controller's
+# unstamped cmd_vel topic.
+twist_mux:
+  ros__parameters:
+    use_sim_time: true
+    topics:
+      navigation:
+        topic: cmd_vel            # Nav2 controller_server output
+        timeout: 0.5
+        priority: 10
+      search:
+        topic: cmd_vel_search     # pick node's spin-to-find / visual servo
+        timeout: 0.5
+        priority: 100             # overrides Nav2 when active

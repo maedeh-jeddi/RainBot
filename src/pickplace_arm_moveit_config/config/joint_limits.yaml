@@ -1,0 +1,64 @@
+# joint_limits.yaml allows the dynamics properties specified in the URDF to be overwritten or augmented as needed
+# For beginners, we downscale velocity and acceleration limits.
+# You can always specify higher scaling factors (<= 1.0) in your motion requests.  # Increase the values below to 1.0 to always move at maximum speed.
+default_velocity_scaling_factor: 0.1
+default_acceleration_scaling_factor: 0.1
+# Specific joint properties can be changed with the keys [max_position, min_position, max_velocity, max_acceleration]
+# Joint limits can be turned off with [has_velocity_limits, has_acceleration_limits]
+# Acceleration limits are ENABLED (max_acceleration set) because the Pilz
+# industrial motion planner (PTP), used for direct point-to-point arm moves,
+# requires an acceleration limit on every joint - without it PTP planning
+# fails. They also let MoveIt time-parameterize trajectories smoothly.
+#
+# Velocities are FR3's real datasheet limits, taken from
+# franka_description/robots/fr3/joint_limits.yaml (joints 1-4: 2.62 rad/s;
+# joints 5 and 7: 5.26 rad/s; joint 6: 4.18 rad/s). Accelerations are not
+# published per-joint by Franka in that file, so they are set here to a
+# conservative fraction that keeps Pilz PTP happy without commanding jerky
+# motion; raise them once the arm's real behaviour in sim has been observed.
+joint_limits:
+  fr3_joint1:
+    has_velocity_limits: true
+    max_velocity: 2.62
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  fr3_joint2:
+    has_velocity_limits: true
+    max_velocity: 2.62
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  fr3_joint3:
+    has_velocity_limits: true
+    max_velocity: 2.62
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  fr3_joint4:
+    has_velocity_limits: true
+    max_velocity: 2.62
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  fr3_joint5:
+    has_velocity_limits: true
+    max_velocity: 5.26
+    has_acceleration_limits: true
+    max_acceleration: 6.0
+  fr3_joint6:
+    has_velocity_limits: true
+    max_velocity: 4.18
+    has_acceleration_limits: true
+    max_acceleration: 6.0
+  fr3_joint7:
+    has_velocity_limits: true
+    max_velocity: 5.26
+    has_acceleration_limits: true
+    max_acceleration: 6.0
+  fr3_finger_joint1:
+    has_velocity_limits: true
+    max_velocity: 0.2
+    has_acceleration_limits: false
+    max_acceleration: 0.0
+  fr3_finger_joint2:
+    has_velocity_limits: true
+    max_velocity: 0.2
+    has_acceleration_limits: false
+    max_acceleration: 0.0

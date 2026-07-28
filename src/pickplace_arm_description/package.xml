@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>pickplace_arm_description</name>
+  <version>0.0.1</version>
+  <description>URDF/Xacro description for a mobile manipulator: Clearpath Husky A200 base with a Franka FR3 arm and Franka Hand gripper</description>
+  <maintainer email="maedehjeddi1993@gmail.com">Maedeh Jeddi</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- No description-package dependencies. The Husky A200 base, the FR3 arm +
+       Franka Hand, and the RealSense/SICK sensor housings used to be pulled in
+       at xacro time from clearpath_platform_description, franka_description,
+       realsense2_description and sick_scan_xd. Those were nested git checkouts
+       that could not be pushed with this project, so the subset this robot
+       actually uses is now vendored into urdf/vendor/ + meshes/ here, and this
+       package stands alone. -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>gz_ros2_control</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+  <exec_depend>robot_localization</exec_depend>
+</package>

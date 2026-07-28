@@ -1,0 +1,18 @@
+# Default initial positions for pickplace_arm's ros2_control mock system.
+#
+# These are Franka's own "ready" pose (joint2 -pi/4, joint4 -3pi/4,
+# joint6 pi/2, joint7 pi/4). All-zeros - what the old 6-DOF placeholder arm
+# used - is NOT a legal FR3 configuration: joint4's range is [-3.077, -0.117]
+# and joint6's is [0.440, 4.622], so zero lies outside both and the mock
+# hardware would start out of limits.
+
+initial_positions:
+  fr3_joint1: 0.0
+  fr3_joint2: -0.7854
+  fr3_joint3: 0.0
+  fr3_joint4: -2.3562
+  fr3_joint5: 0.0
+  fr3_joint6: 1.5708
+  fr3_joint7: 0.7854
+  fr3_finger_joint1: 0.035
+  fr3_finger_joint2: 0.035
