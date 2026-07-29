@@ -46,12 +46,17 @@ def generate_launch_description():
         parameters=[sim, {'autostart': True,
                           'node_names': ['map_server', 'amcl']}])
 
+    # config/navigation.rviz, not the moveit_config one: this session runs no
+    # move_group, so a MoveIt MotionPlanning display would block 10 s on an
+    # SRDF that never arrives and then log "Robot model not loaded". The
+    # navigation config drops that display and keeps what checking localization
+    # actually needs -- the map, both costmaps, the AMCL particle cloud, the
+    # LIDAR scan and TF.
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2', output='screen',
         condition=IfCondition(LaunchConfiguration('use_rviz')),
-        arguments=['-d', os.path.join(
-            get_package_share_directory('pickplace_arm_moveit_config'),
-            'config', 'moveit.rviz')],
+        arguments=['-d', os.path.join(bringup_share, 'config',
+                                      'navigation.rviz')],
         parameters=[sim])
 
     return LaunchDescription([

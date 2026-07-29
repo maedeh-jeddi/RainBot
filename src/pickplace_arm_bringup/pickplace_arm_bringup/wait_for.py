@@ -107,7 +107,8 @@ class WaitFor(Node):
                     f'/clock jumped BACKWARDS by {self.last_clock - t:.2f}s '
                     f'({self.jumps} so far). If this persists, a previous run\'s '
                     f'gz server is probably still running: pkill -9 -f "gz sim"')
-        self.last_clock = max(self.last_clock, t)
+        # First message has no previous value to compare against.
+        self.last_clock = t if self.last_clock is None else max(self.last_clock, t)
 
     def _clock_ready(self):
         if self.args.clock_stable <= 0.0:

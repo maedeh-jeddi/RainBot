@@ -27,11 +27,15 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(bringup_share, 'launch', 'slam.launch.py')))
 
+    # config/navigation.rviz, not the moveit_config one: this session runs no
+    # move_group, so a MoveIt MotionPlanning display would block 10 s on an
+    # SRDF that never arrives and then log "Robot model not loaded". The
+    # navigation config drops that display and keeps what mapping actually
+    # needs -- the occupancy grid, the LIDAR scan, TF and the robot model.
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2', output='screen',
-        arguments=['-d', os.path.join(
-            get_package_share_directory('pickplace_arm_moveit_config'),
-            'config', 'moveit.rviz')],
+        arguments=['-d', os.path.join(bringup_share, 'config',
+                                      'navigation.rviz')],
         parameters=[{'use_sim_time': True}],
     )
 

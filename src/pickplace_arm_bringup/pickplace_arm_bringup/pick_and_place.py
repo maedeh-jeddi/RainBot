@@ -370,18 +370,29 @@ class PickAndPlace(Node):
         if color not in self._attach_pubs:
             self.get_logger().warn(f'[attach] no attach topic for colour {color}')
             return
+        # Settle the jaws onto the box's faces BEFORE the weld, not after.
+        # Welding is the one and only thing that turns box/finger collision off,
+        # so the still-active GRIP_CLOSED=0.0 command is only ever free to drive
+        # the fingers through the box in the window between the weld and this
+        # move. Retiring that command first closes the window entirely: the box
+        # is still holding the jaws open at ~0.030 here, and GRIP_HOLD (0.029)
+        # asks for marginally less than that, so nothing visibly moves and the
+        # grasp is never loosened -- but once collision goes away there is no
+        # longer a 0.0 command left to plunge them inward. Doing it after works
+        # functionally, the weld having already made the carry rigid, but shows
+        # a full close-then-reopen cycle on screen.
+        #
+        # This lives HERE rather than at the call site for the same reason
+        # detach is hooked on gripper-open: welding is the one and only place
+        # that has to deal with the collision switch-off, so hooking it here
+        # means a future call site cannot forget.
+        #
+        # release=False because this is an opening motion by position that must
+        # NOT be read as letting go.
+        self.gripper(GRIP_HOLD, 'settle jaws onto the box faces', release=False)
         self._publish_box_cmd(self._attach_pubs[color])
         self._attached_color = color
         self.get_logger().info(f'[attach] {color} box welded to the gripper')
-        # Back the jaws off onto the box's faces, HERE rather than at the call
-        # site, for the same reason detach is hooked on gripper-open: welding is
-        # the one and only thing that turns box/finger collision off, so welding
-        # is the one and only place that has to undo the over-close it causes.
-        # Hooking it here means a future call site cannot forget.
-        #
-        # release=False because this is an opening motion that must NOT be read
-        # as letting go -- the weld it just made has to survive it.
-        self.gripper(GRIP_HOLD, 'settle jaws onto the box faces', release=False)
 
     def detach_box(self, color=None, log_label=''):
         """Release the weld. With no colour, releases every box (used at startup
@@ -530,7 +541,7 @@ class PickAndPlace(Node):
         keeps the rule every existing call site relies on -- opening at all,
         while welded, releases the box. Pass False for a move that opens the
         jaws WITHOUT meaning "let go": the only such move is settling them onto
-        the box faces right after the weld (see attach_box), which is an opening
+        the box faces just before the weld (see attach_box), which is an opening
         motion by position but the exact opposite of a release by intent.
         """
         self.get_logger().info(f'[gripper] -> {pos} {label}')
