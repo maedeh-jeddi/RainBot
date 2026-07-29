@@ -8,7 +8,7 @@ pedestal — it can navigate a whole warehouse floor and manipulate objects
 wherever they are, which is exactly what pick-and-place work in the real world
 demands: the parts, bins and drop-off points are rarely all next to each other.
 
-![Pick-and-place mission](<link-to-banner-image>)
+![Pick-and-place mission](docs/images/banner.gif)
 
 RainBot runs one complete autonomous mission end to end: it localizes itself
 on a saved map of a warehouse, drives to a table, picks three coloured cubes off
@@ -178,7 +178,7 @@ spawned into it by the launch file:
 - three **columns** at map x = −1.0, 20 cm square, of heights **0.30 / 0.40 /
   0.50 m**, each painted the colour of the cube that belongs on it
 
-![The scene in Gazebo](<link-to-gazebo-scene-image>)
+![The scene in Gazebo](docs/images/gazebo_overall.png)
 
 *The Tugbot warehouse: the robot, the table with the three cubes, and the three
 matching columns.*
@@ -199,6 +199,10 @@ For each cube, in order:
 7. **Verify** — the front camera looks for the cube *above the column top*. If
    it is not there, the placement is reported FAILED rather than silently
    assumed good.
+
+![Close-up of the grasp in Gazebo](docs/images/gazebo_closeup.png)
+
+*Close-up on the arm and gripper picking a cube off the table.*
 
 Finally the robot drives to a parking pose and reports `MISSION 2: DONE`.
 
@@ -450,10 +454,15 @@ footprint, global/local plans, AMCL particles), **Perception** (LIDAR, both
 point clouds, both camera images) and a MoveIt **MotionPlanning** panel. Two
 saved views are included: *Chase robot* and *Gripper close-up*.
 
-![The RViz mission layout](<link-to-rviz-layout-image>)
+![The RViz mission layout](docs/images/rviz_overall.png)
 
 *Robot model and TF, map and costmaps, the LIDAR scan and both camera feeds,
 alongside the MoveIt MotionPlanning panel.*
+
+![RViz close-up on the point clouds during a pick](docs/images/rviz_closeup.png)
+
+*Gripper close-up view: both camera point clouds and the MoveIt
+MotionPlanning panel together during a pick.*
 
 Two things in that file are deliberate and should not be "tidied":
 
@@ -487,6 +496,11 @@ ros2 run nav2_map_server map_saver_cli -f src/pickplace_arm_bringup/maps/<name>
 # 3) Sanity-check localization on the saved map
 ros2 launch pickplace_arm_bringup localization.launch.py
 ```
+
+![RViz during mapping](docs/images/rviz_mapping.png)
+
+*RViz while driving and mapping: the growing occupancy grid and the live
+LIDAR scan feeding slam_toolbox.*
 
 ---
 
