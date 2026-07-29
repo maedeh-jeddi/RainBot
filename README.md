@@ -8,8 +8,7 @@ pedestal — it can navigate a whole warehouse floor and manipulate objects
 wherever they are, which is exactly what pick-and-place work in the real world
 demands: the parts, bins and drop-off points are rarely all next to each other.
 
-<!-- Drop the file at docs/images/banner.gif -- see docs/images/README.md -->
-![Pick-and-place mission](docs/images/banner.gif)
+![Pick-and-place mission](<link-to-banner-image>)
 
 RainBot runs one complete autonomous mission end to end: it localizes itself
 on a saved map of a warehouse, drives to a table, picks three coloured cubes off
@@ -42,7 +41,6 @@ description packages to clone.
 - [Tuned constants worth knowing](#tuned-constants-worth-knowing)
 - [Performance](#performance)
 - [Troubleshooting](#troubleshooting)
-  - [Everything is slow and the fans max out](#everything-is-slow-and-the-fans-max-out)
 - [Roadmap](#roadmap)
 
 ---
@@ -180,8 +178,7 @@ spawned into it by the launch file:
 - three **columns** at map x = −1.0, 20 cm square, of heights **0.30 / 0.40 /
   0.50 m**, each painted the colour of the cube that belongs on it
 
-<!-- Drop the file at docs/images/gazebo.png -- see docs/images/README.md -->
-![The scene in Gazebo](docs/images/gazebo.png)
+![The scene in Gazebo](<link-to-gazebo-scene-image>)
 
 *The Tugbot warehouse: the robot, the table with the three cubes, and the three
 matching columns.*
@@ -453,8 +450,7 @@ footprint, global/local plans, AMCL particles), **Perception** (LIDAR, both
 point clouds, both camera images) and a MoveIt **MotionPlanning** panel. Two
 saved views are included: *Chase robot* and *Gripper close-up*.
 
-<!-- Drop the file at docs/images/rviz.png -- see docs/images/README.md -->
-![The RViz mission layout](docs/images/rviz.png)
+![The RViz mission layout](<link-to-rviz-layout-image>)
 
 *Robot model and TF, map and costmaps, the LIDAR scan and both camera feeds,
 alongside the MoveIt MotionPlanning panel.*
@@ -599,7 +595,7 @@ with: a starved LIDAR (below ~5 Hz) makes slam_toolbox's scan matcher fail
 during rotation, and the map→base_link transform freezes while the robot is
 physically turning.
 
-Those numbers were measured on an RTX 2050 with hardware rendering. **On a
+Those numbers were measured with hardware-accelerated rendering. **On a
 machine falling back to Mesa `llvmpipe` the RTF collapses regardless of how fast
 the CPU is** — that is a driver problem, not a tuning problem, and no setting in
 this table will rescue it. See
@@ -644,8 +640,8 @@ and a GPU-LIDAR on the CPU.
 
 | Cause | Fix |
 | --- | --- |
-| No proprietary GPU driver | Install it — but **not** with `ubuntu-drivers autoinstall`, see below |
-| Hybrid-graphics laptop on the wrong GPU | See [hybrid graphics](#hybrid-graphics-laptops) |
+| No proprietary GPU driver | Install the vendor driver recommended by `ubuntu-drivers devices` |
+| Hybrid-graphics laptop rendering on the integrated GPU | Check `prime-select query`; offload the simulator with `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia` |
 | VM, WSL, container, remote desktop / X-forwarding | No GPU passthrough — `llvmpipe` is the only option there. Run on the host. |
 | AMD / Intel GPU showing llvmpipe | `sudo apt install -y mesa-utils mesa-va-drivers libgl1-mesa-dri` |
 
@@ -656,102 +652,6 @@ surfaces:
 ros2 launch pickplace_arm_bringup mission_pickPlace.launch.py \
     use_gazebo_gui:=false use_rviz:=false
 ```
-
-#### Installing an NVIDIA driver without breaking your boot
-
-`sudo ubuntu-drivers autoinstall` is the obvious command and it is a trap: it
-can pull in a **newer kernel** alongside the driver, and if that kernel's module
-package does not install completely, the next boot ends at an `initramfs` prompt
-with *"Gave up waiting for root file system device … UUID does not exist"*.
-
-Recover by picking the previous kernel from GRUB → *Advanced options for
-Ubuntu*, then purge the broken one:
-
-```bash
-sudo apt purge linux-image-<BAD>-generic linux-modules-<BAD>-generic \
-               linux-modules-extra-<BAD>-generic
-sudo update-grub
-```
-
-Note `update-initramfs -c` will **not** regenerate an image that already exists
-— it refuses rather than overwriting. Use `-u`:
-
-```bash
-sudo update-initramfs -u -k all
-```
-
-Do the install deliberately instead:
-
-```bash
-# headers for the kernel you are ACTUALLY running
-sudo apt install -y build-essential dkms linux-headers-$(uname -r)
-
-ubuntu-drivers devices        # note the recommended version
-
-# DRY RUN -- check nothing drags in a new kernel
-sudo apt install -s nvidia-driver-570 | grep -E "^Inst (linux-|nvidia)"
-```
-
-If that lists any `linux-image-*` or `linux-modules-*`, skip the metapackage and
-install the DKMS pieces alone — they build against whatever kernel you are on:
-
-```bash
-sudo apt install -y linux-headers-$(uname -r) \
-    nvidia-dkms-570 nvidia-utils-570 libnvidia-gl-570
-```
-
-**Verify before rebooting.** `dkms status` must read
-`nvidia/570.xxx, <your kernel>, x86_64: installed`.
-
-Two things that look like failures but are not: the screen going **dark
-mid-install** (the driver swaps the GL libraries out from under your session —
-switch to a console with Ctrl+Alt+F3 and let apt finish; *never* power off
-mid-transaction), and `nvidia-smi` reporting *"couldn't communicate with the
-NVIDIA driver"* afterwards. For the second, check in this order:
-
-```bash
-mokutil --sb-state    # Secure Boot on? module built but blocked -> enroll MOK
-dkms status           # empty? never built for this kernel
-sudo modprobe nvidia  # "not found in /lib/modules/..." -> no module for this kernel
-```
-
-The last is what you get from the *prebuilt* modules (tied to one kernel) after
-removing that kernel. `nvidia-dkms-<ver>` is immune to it.
-
-#### Hybrid graphics laptops
-
-On an Intel+NVIDIA laptop, which GPU renders depends on the PRIME mode:
-
-```bash
-prime-select query
-```
-
-- **`nvidia`** — the dGPU drives everything; plain `glxinfo` reports the RTX and
-  no prefix is needed. Simplest, but costs battery and heat.
-- **`on-demand`** — Intel is primary, and `glxinfo` reporting
-  `Mesa Intel(R) Graphics` is **correct, not broken** — that is already hardware
-  rendering and the mission runs on it. Offload just the simulator:
-
-```bash
-__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
-  ros2 launch pickplace_arm_bringup mission_pickPlace.launch.py
-```
-
-Check the offload actually works before relying on it, and confirm `gz sim`
-appears in `nvidia-smi`'s process table while running:
-
-```bash
-__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
-  glxinfo -B | grep "OpenGL renderer"
-```
-
-Switching modes with `prime-select` takes effect at logout — not mid-run.
-
-### First launch hangs before the world appears
-
-The world's 7 Fuel models are downloading into `~/.gz/fuel` (~100 MB). This
-happens once and needs network. See
-[Requirements](#world-assets-download-on-first-run) to pre-fetch them.
 
 ### Out of memory / the machine grinds
 
