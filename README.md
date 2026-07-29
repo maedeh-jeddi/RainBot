@@ -1,4 +1,4 @@
-# RainBot — an autonomous mobile cobot for pick-and-place
+# RainBot: an autonomous mobile cobot for pick-and-place
 
 **RainBot** is a mobile cobot: a **Clearpath Husky A200** mobile base
 carrying a **Franka Emika FR3** 7-DOF arm with a **Franka Hand** gripper,
