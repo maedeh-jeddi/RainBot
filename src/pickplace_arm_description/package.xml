@@ -3,7 +3,7 @@
   <name>pickplace_arm_description</name>
   <version>0.0.1</version>
   <description>URDF/Xacro description for a mobile manipulator: Clearpath Husky A200 base with a Franka FR3 arm and Franka Hand gripper</description>
-  <maintainer email="maedehjeddi1993@gmail.com">Maedeh Jeddi</maintainer>
+  <maintainer email="a.pahlevani1998@gmail.com">Ali Pahlevani</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
 

@@ -1,6 +1,6 @@
-# RainBot — an autonomous mobile manipulator for pick-and-place
+# RainBot — an autonomous mobile cobot for pick-and-place
 
-**RainBot** is a mobile manipulator: a **Clearpath Husky A200** mobile base
+**RainBot** is a mobile cobot: a **Clearpath Husky A200** mobile base
 carrying a **Franka Emika FR3** 7-DOF arm with a **Franka Hand** gripper,
 simulated in ROS 2 Humble + Gazebo Harmonic. Pairing a full arm with a mobile
 base means RainBot isn't limited to whatever is within reach of a fixed
@@ -730,4 +730,3 @@ colcon build --packages-select <pkg> --symlink-install
 ## Author
 
 Ali Pahlevani
-Maedeh Jeddi

@@ -4,7 +4,7 @@
   <name>pickplace_arm_bringup</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="maedehjeddi1993@gmail.com">maedeh</maintainer>
+  <maintainer email="a.pahlevani1998@gmail.com">Ali Pahlevani</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>
