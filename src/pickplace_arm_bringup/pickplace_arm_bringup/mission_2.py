@@ -371,7 +371,12 @@ class Mission2(Mission):
                     self._stop_base()
                     log.warn('[place] lost the column -- aborting approach')
                     return False
-                twist.linear.x *= 0.4
+                # Hold station rather than coasting in on a target that is no
+                # longer visible -- same fix, same reason as claw_approach (see
+                # the comment there): the old `*= 0.4` kept commanding forward
+                # motion through all 12 blind cycles, which here means creeping
+                # a box-laden gripper into a solid column.
+                twist.linear.x = 0.0
                 twist.angular.z = 0.0
             for _ in range(4):
                 self.cmd_vel_pub.publish(twist)

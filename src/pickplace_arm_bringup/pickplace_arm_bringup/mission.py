@@ -31,7 +31,7 @@ from nav2_msgs.action import NavigateThroughPoses
 
 from pickplace_arm_bringup.nav_and_pick import NavAndPick, APPROACH_DIST
 from pickplace_arm_bringup.pick_and_place import (
-    HOME_CONFIG, scan_quat, GRIPPER_X, GRIPPER_Y, BOX_SIZE)
+    HOME_CONFIG, scan_quat, GRIPPER_Y)
 from pickplace_arm_bringup.search_and_pick import (
     APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX, SEARCH_POSITION, SEARCH_PITCH,
@@ -48,12 +48,46 @@ from pickplace_arm_bringup.search_and_pick import (
 PHASE2_HANDOFF_DIST = 0.60
 STOP_DISTANCE_FINE = 0.41
 
-# Claw approach: stop driving when the FRONT camera reads the box this far
-# ahead. The camera sees the box's NEAR FACE, so a reading of
-# GRIPPER_X - BOX_SIZE/2 means the box CENTRE is at GRIPPER_X, i.e. directly
-# under the gripper-down ready pose. Centre laterally to within CLAW_Y_TOL (the
-# jaws close in y, so lateral accuracy matters most).
-CLAW_STOP_X = GRIPPER_X - BOX_SIZE / 2.0
+# Claw approach: stop driving when the FRONT camera reads the box's NEAR FACE
+# this far ahead. Centre laterally to within CLAW_Y_TOL (the jaws close in y, so
+# lateral accuracy matters most).
+#
+# 0.75, NOT the GRIPPER_X - BOX_SIZE/2 = 0.67 this used to be. That old value
+# put the box centre exactly under the gripper-down ready pose, which is a
+# tidy-looking invariant and an unusable one: it asks the base to stop 2.8 cm
+# short of the point where the front camera CANNOT SEE THE BOX AT ALL.
+#
+# The lens sits FRONT_CAM_Z = 0.223 m off the floor and the table top is at
+# 0.30 m, so the camera looks at a table box from BELOW the surface it stands
+# on. All it can ever see is the sliver poking above the table's own near top
+# edge, and that sliver shrinks as the base closes in: with the table's near
+# face 0.095 m nearer than the box's, the lowest visible point of the box face
+# is
+#     z(d) = 0.223 + 0.077 * d / (d - 0.095)      (d = lens -> box face, m)
+# which reaches the box's top (0.36) at d = 0.217 -- base_link x = 0.642.
+#
+# MEASURED, not modelled. That expression reproduces the logged detection
+# heights across a whole approach to within a millimetre (predicted cam z 0.112
+# / 0.114 / 0.117 / 0.121 / 0.126 / 0.132 against 0.112 / 0.114 / 0.117 / 0.122
+# / 0.127 / 0.133 logged at box-face distances 0.779 / 0.620 / 0.462 / 0.352 /
+# 0.290 / 0.244), and a frame grabbed at the old 0.67 stop is 100% table brown
+# with zero red pixels in it.
+#
+# At 0.75 the box face is still ~47% visible (a solid ~1200-pixel blob, versus
+# ~870 and falling at 0.67), with 0.11 m of margin on the blind point and 0.16 m
+# of bumper-to-table clearance. The base no longer has to put the box UNDER the
+# gripper, because grab_below descends on wherever the box actually is: the
+# grasp lands at 0.75 + TABLE_X_OFFSET = 0.78, inside the /compute_ik-verified
+# MAX_REACH_X = 0.85 envelope at every working height. Letting the ARM cover
+# the last 8 cm is free; making the BASE cover it is not.
+#
+# Do NOT "fix" this by driving the base the rest of the way blind. That was
+# tried (odom-closed-loop creep from 0.88): the mission node's own odom TF read
+# stayed frozen at 0.000 m for all three of _creep_forward's 25 s timeouts, so
+# it never terminated early, drove the robot into the table and wedged it there
+# -- 9.1 m of commanded travel showing up as ~9.6 m of phantom wheel odometry,
+# the same signature the column-placement notes in mission_2.py describe.
+CLAW_STOP_X = 0.75
 CLAW_Y_TOL = 0.02
 
 # Hand-off distance from the front-camera coarse approach to the wrist-camera
@@ -320,12 +354,12 @@ class Mission(NavAndPick):
     # --- CLAW approach: keep the gripper down, drive the box under it ---------
     def claw_approach(self, box_map, timeout_sec=60.0, color='blue'):
         """One continuous motion: keep the gripper pointing straight DOWN and use
-        the front (chassis) camera to drive the base until the `color` box sits
-        directly under the gripper -- no stop-and-go, no arm reorientation. The
-        front camera sees the box accurately from ~1.8 m right down to ~0.3 m, so
-        it alone guides the whole approach; the wrist camera isn't used (it points
-        down with the gripper). Stops when the box's forward reading reaches
-        CLAW_STOP_X (box then actually under the gripper) and is centred."""
+        the front (chassis) camera to drive the base until the `color` box is
+        centred CLAW_STOP_X ahead -- no stop-and-go, no arm reorientation. The
+        front camera alone guides the whole approach; the wrist camera isn't
+        used (it points down with the gripper). Stops when the box's forward
+        reading reaches CLAW_STOP_X (box then within the arm's reach, and still
+        visible -- see the constant) and is centred."""
         log = self.get_logger()
         log.info('=== MISSION APPROACH: claw (gripper-down, continuous) ===')
         self.move_config(HOME_CONFIG, 'gripper-down ready')
@@ -341,7 +375,7 @@ class Mission(NavAndPick):
                 bx, by, _ = det
                 if bx <= CLAW_STOP_X and abs(by) <= CLAW_Y_TOL:
                     self._stop_base()
-                    log.info(f'[claw] box under gripper (front {bx:.2f},{by:+.2f})')
+                    log.info(f'[claw] box within reach (front {bx:.2f},{by:+.2f})')
                     return True
                 fwd = max(0.0, bx - CLAW_STOP_X)
                 # Only apply the minimum-speed floor while there is still
@@ -375,7 +409,18 @@ class Mission(NavAndPick):
                     self._stop_base()
                     log.warn('[claw] lost the box -- aborting approach')
                     return False
-                twist.linear.x *= 0.4    # ease off, don't hard-stop
+                # STOP, don't coast. This used to be `twist.linear.x *= 0.4`
+                # ("ease off, don't hard-stop"), which still commands forward
+                # motion at every one of the 12 lost cycles -- a decaying
+                # geometric series, but one that runs while the robot is blind
+                # and pointed at whatever it just lost sight of. Measured live
+                # on the table pick: the base carried ~0.05 m past its last
+                # good reading and ended with its bumper 5 mm off the table
+                # (front-camera cloud reading 0.058-0.124 m, entire frame
+                # table-brown). Losing the target is precisely when the base
+                # must not keep closing on it -- so hold station and let the
+                # lost counter decide, exactly as it does for angular.z.
+                twist.linear.x = 0.0
                 twist.angular.z = 0.0
             # publish continuously (~30 Hz for ~0.12 s) so the base keeps moving
             # smoothly between detections instead of stopping.
@@ -407,16 +452,11 @@ class Mission(NavAndPick):
                 return True
             log.warn('[claw] grab missed -- re-centring and retrying')
             self.move_config(HOME_CONFIG, 'gripper-down ready')
-            # claw_approach stops the base at CLAW_STOP_X -- right at the
-            # front camera's close-range limit (its near clip is 0.05 m, and
-            # a box that close sits at a steep downward angle near the edge
-            # of the FOV). A miss leaves the base sitting there; the retry's
-            # fresh claw_approach then has a good chance of never
-            # re-acquiring the box at all ('lost the box', 0 detections) and
-            # returning False immediately -- burning the whole attempt
-            # without ever reaching grab_below again. Back off first so the
-            # retry starts from the same comfortable detection range the
-            # first attempt did.
+            # A miss leaves the base parked at CLAW_STOP_X. That is still a
+            # range the camera sees the box from (which is the whole point of
+            # where CLAW_STOP_X now sits), but backing off first puts the retry
+            # at the same comfortable detection distance the first attempt had,
+            # and un-nudges the box's surroundings if the jaws grazed it.
             self._drive_blind(-0.15, 2.0)
         return False
 

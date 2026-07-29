@@ -42,6 +42,7 @@ description packages to clone.
 - [Tuned constants worth knowing](#tuned-constants-worth-knowing)
 - [Performance](#performance)
 - [Troubleshooting](#troubleshooting)
+  - [Everything is slow and the fans max out](#everything-is-slow-and-the-fans-max-out)
 - [Roadmap](#roadmap)
 
 ---
@@ -55,7 +56,38 @@ description packages to clone.
 | Gazebo | Harmonic (`gz-sim8`, tested on 8.14.0) |
 | `ros_gz` | Harmonic variant — `ros-humble-ros-gzharmonic-*` |
 
-Install the ROS-side dependencies:
+### A working GPU driver — check this before anything else
+
+**Gazebo must render on a real GPU.** If OpenGL falls back to Mesa's software
+rasteriser (`llvmpipe`), the simulation still starts and still looks correct,
+but it crawls, pegs every CPU core and cooks the machine — detection never
+fires and the pick aborts. A faster CPU does not help; it just runs hotter.
+
+```bash
+sudo apt install -y mesa-utils
+glxinfo -B | grep -E "OpenGL vendor|OpenGL renderer"
+```
+
+`llvmpipe`, `softpipe` or `swrast` means software rendering — fix that first.
+See [Troubleshooting](#everything-is-slow-and-the-fans-max-out).
+
+### Gazebo Harmonic
+
+Harmonic is **not** in the Ubuntu archive; it comes from the OSRF repository,
+which has to be added first. Installing the ROS bridge alone is not enough:
+
+```bash
+sudo apt install -y lsb-release gnupg curl
+sudo curl https://packages.osrfoundation.org/gazebo.gpg \
+    --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) \
+signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] \
+http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" \
+    | sudo tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
+sudo apt update && sudo apt install -y gz-harmonic
+```
+
+### ROS-side dependencies
 
 ```bash
 sudo apt update
@@ -73,6 +105,16 @@ sudo apt install -y \
 `gz_ros2_control` and `pymoveit2` are **included in this repository** (under
 `src/`) and are built from source with the rest of the workspace — there is
 nothing extra to clone.
+
+### World assets are vendored — no download on first run
+
+The Tugbot warehouse world pulls 7 models from Gazebo Fuel (warehouse shell,
+shelves, pallets, carts, the Tugbot itself). Those models are vendored into
+`src/pickplace_arm_description/fuel_cache/` (~17 MB, thumbnails stripped), and
+`gazebo.launch.py` points the Fuel client's cache root at that directory via
+`GZ_FUEL_CACHE_PATH` before Gazebo starts. The world resolves entirely from
+the repo on the very first launch — no network access needed, and nothing is
+written to `~/.gz/fuel`.
 
 ---
 
@@ -467,6 +509,7 @@ Every `package://` reference in the robot now resolves to this one package.
 | `franka_description` | FR3 + Franka Hand macros, yamls, meshes | `urdf/vendor/franka/`, `config/franka/`, `meshes/robots/fr3/`, `meshes/robot_ee/` |
 | `realsense2_description` | D455, D405 meshes | `meshes/sensors/` |
 | `sick_scan_xd` | TiM5xx mesh | `meshes/sensors/` |
+| Gazebo Fuel | Tugbot warehouse world models (warehouse shell, shelves, pallets, carts, Tugbot) | `fuel_cache/` |
 
 Upstream licences are kept beside the meshes as `LICENSE.<package>`.
 
@@ -556,6 +599,12 @@ with: a starved LIDAR (below ~5 Hz) makes slam_toolbox's scan matcher fail
 during rotation, and the map→base_link transform freezes while the robot is
 physically turning.
 
+Those numbers were measured on an RTX 2050 with hardware rendering. **On a
+machine falling back to Mesa `llvmpipe` the RTF collapses regardless of how fast
+the CPU is** — that is a driver problem, not a tuning problem, and no setting in
+this table will rescue it. See
+[Troubleshooting](#everything-is-slow-and-the-fans-max-out).
+
 ---
 
 ## Troubleshooting
@@ -577,6 +626,132 @@ ps -ef | grep -E "gz sim|ruby" | grep -v grep
 
 Always check this before reporting a bug. It has masqueraded as a world-loading
 problem, a localization problem and a controller-spawn timeout.
+
+### Everything is slow and the fans max out
+
+Gazebo *and* RViz both crawl, the real-time factor sits far below 1, detection
+never fires so the pick aborts, every core is pegged and the machine gets hot.
+A faster CPU makes it worse, not better.
+
+**This is almost always software rendering.** Confirm:
+
+```bash
+glxinfo -B | grep -E "OpenGL vendor|OpenGL renderer"
+```
+
+`llvmpipe`, `softpipe` or `swrast` means Gazebo is rasterising two RGB-D cameras
+and a GPU-LIDAR on the CPU.
+
+| Cause | Fix |
+| --- | --- |
+| No proprietary GPU driver | Install it — but **not** with `ubuntu-drivers autoinstall`, see below |
+| Hybrid-graphics laptop on the wrong GPU | See [hybrid graphics](#hybrid-graphics-laptops) |
+| VM, WSL, container, remote desktop / X-forwarding | No GPU passthrough — `llvmpipe` is the only option there. Run on the host. |
+| AMD / Intel GPU showing llvmpipe | `sudo apt install -y mesa-utils mesa-va-drivers libgl1-mesa-dri` |
+
+If the driver genuinely cannot be fixed, this at least removes both render
+surfaces:
+
+```bash
+ros2 launch pickplace_arm_bringup mission_pickPlace.launch.py \
+    use_gazebo_gui:=false use_rviz:=false
+```
+
+#### Installing an NVIDIA driver without breaking your boot
+
+`sudo ubuntu-drivers autoinstall` is the obvious command and it is a trap: it
+can pull in a **newer kernel** alongside the driver, and if that kernel's module
+package does not install completely, the next boot ends at an `initramfs` prompt
+with *"Gave up waiting for root file system device … UUID does not exist"*.
+
+Recover by picking the previous kernel from GRUB → *Advanced options for
+Ubuntu*, then purge the broken one:
+
+```bash
+sudo apt purge linux-image-<BAD>-generic linux-modules-<BAD>-generic \
+               linux-modules-extra-<BAD>-generic
+sudo update-grub
+```
+
+Note `update-initramfs -c` will **not** regenerate an image that already exists
+— it refuses rather than overwriting. Use `-u`:
+
+```bash
+sudo update-initramfs -u -k all
+```
+
+Do the install deliberately instead:
+
+```bash
+# headers for the kernel you are ACTUALLY running
+sudo apt install -y build-essential dkms linux-headers-$(uname -r)
+
+ubuntu-drivers devices        # note the recommended version
+
+# DRY RUN -- check nothing drags in a new kernel
+sudo apt install -s nvidia-driver-570 | grep -E "^Inst (linux-|nvidia)"
+```
+
+If that lists any `linux-image-*` or `linux-modules-*`, skip the metapackage and
+install the DKMS pieces alone — they build against whatever kernel you are on:
+
+```bash
+sudo apt install -y linux-headers-$(uname -r) \
+    nvidia-dkms-570 nvidia-utils-570 libnvidia-gl-570
+```
+
+**Verify before rebooting.** `dkms status` must read
+`nvidia/570.xxx, <your kernel>, x86_64: installed`.
+
+Two things that look like failures but are not: the screen going **dark
+mid-install** (the driver swaps the GL libraries out from under your session —
+switch to a console with Ctrl+Alt+F3 and let apt finish; *never* power off
+mid-transaction), and `nvidia-smi` reporting *"couldn't communicate with the
+NVIDIA driver"* afterwards. For the second, check in this order:
+
+```bash
+mokutil --sb-state    # Secure Boot on? module built but blocked -> enroll MOK
+dkms status           # empty? never built for this kernel
+sudo modprobe nvidia  # "not found in /lib/modules/..." -> no module for this kernel
+```
+
+The last is what you get from the *prebuilt* modules (tied to one kernel) after
+removing that kernel. `nvidia-dkms-<ver>` is immune to it.
+
+#### Hybrid graphics laptops
+
+On an Intel+NVIDIA laptop, which GPU renders depends on the PRIME mode:
+
+```bash
+prime-select query
+```
+
+- **`nvidia`** — the dGPU drives everything; plain `glxinfo` reports the RTX and
+  no prefix is needed. Simplest, but costs battery and heat.
+- **`on-demand`** — Intel is primary, and `glxinfo` reporting
+  `Mesa Intel(R) Graphics` is **correct, not broken** — that is already hardware
+  rendering and the mission runs on it. Offload just the simulator:
+
+```bash
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
+  ros2 launch pickplace_arm_bringup mission_pickPlace.launch.py
+```
+
+Check the offload actually works before relying on it, and confirm `gz sim`
+appears in `nvidia-smi`'s process table while running:
+
+```bash
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
+  glxinfo -B | grep "OpenGL renderer"
+```
+
+Switching modes with `prime-select` takes effect at logout — not mid-run.
+
+### First launch hangs before the world appears
+
+The world's 7 Fuel models are downloading into `~/.gz/fuel` (~100 MB). This
+happens once and needs network. See
+[Requirements](#world-assets-download-on-first-run) to pre-fetch them.
 
 ### Out of memory / the machine grinds
 
@@ -640,4 +815,5 @@ colcon build --packages-select <pkg> --symlink-install
 
 ## Author
 
+Ali Pahlevani
 Maedeh Jeddi

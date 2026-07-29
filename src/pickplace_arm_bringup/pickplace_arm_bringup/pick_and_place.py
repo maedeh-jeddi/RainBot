@@ -635,8 +635,21 @@ class PickAndPlace(Node):
             log.error('[detect] point cloud is not organized (height <= 1)')
             return None
 
-        pts = np.array(list(point_cloud2.read_points(
-            cloud, field_names=('x', 'y', 'z', 'rgb'), skip_nans=False)))
+        # read_points ALREADY returns a numpy structured array (Humble onwards).
+        # Wrapping it in `list()` first iterated it into 307,200 np.void rows and
+        # rebuilt the array from them, which cost a MEASURED 0.86 s per frame on
+        # this 640x480 cloud against 0.0001 s for the array itself -- bit-identical
+        # output, ~7000x. That single line was what capped every visual servo in
+        # this package at ~1 Hz: claw_approach's loop is detect + 4 x 0.03 s of
+        # cmd_vel publishing, so it should go round at ~5 Hz (camera-limited at
+        # 15 Hz), but it measured ~0.95 s per iteration. At the
+        # APPROACH_LINEAR_MIN 0.08 m/s floor that is ~0.08 m of base travel
+        # between consecutive readings, i.e. the servo could only ever stop to
+        # within ~8 cm of its target -- far too coarse for the table pick, whose
+        # usable stopping window is a few cm wide (see CLAW_STOP_X in
+        # mission.py). At 7 Hz it is ~1 cm per cycle instead.
+        pts = point_cloud2.read_points(
+            cloud, field_names=('x', 'y', 'z', 'rgb'), skip_nans=False)
         x = pts['x'].reshape(h, w)
         y = pts['y'].reshape(h, w)
         z = pts['z'].reshape(h, w)
@@ -801,13 +814,19 @@ class PickAndPlace(Node):
         return False
 
     def grab_below(self, grasp_z=GRASP_Z, color='blue', x_offset=FRONT_X_OFFSET):
-        """Claw grab: the `color` box has been driven directly UNDER the
-        gripper-down ready pose. Take a fresh front-camera read of it, descend
-        straight onto that spot (to grasp_z -- raise it for a box on a table),
-        close, verify, then lift and tuck into the carry pose. No
-        scan/reorientation -- the gripper stays pointing down the whole time.
-        Returns True only if the box is actually held (verified via the fingers);
-        a miss is retried by the caller re-centring and calling again."""
+        """Claw grab: the `color` box has been driven to the claw stop distance
+        by claw_approach. Take a fresh front-camera read of it, descend straight
+        onto that spot (to grasp_z -- raise it for a box on a table), close,
+        verify, then lift and tuck into the carry pose. No scan/reorientation --
+        the gripper stays pointing down the whole time. Returns True only if the
+        box is actually held (verified via the fingers); a miss is retried by
+        the caller re-centring and calling again.
+
+        The descent target is wherever the box actually IS (bounded by
+        MAX_REACH_X), not a fixed point under the ready pose -- the base only
+        has to park the box within reach, not directly beneath the gripper. See
+        CLAW_STOP_X in mission.py for why that distinction is what makes a table
+        pick possible at all."""
         log = self.get_logger()
         log.info('=== CLAW GRAB: descend straight down ===')
         self.gripper(GRIP_OPEN, 'open')

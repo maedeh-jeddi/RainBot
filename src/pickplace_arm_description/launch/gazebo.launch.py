@@ -3,6 +3,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable, IncludeLaunchDescription, RegisterEventHandler,
+    SetEnvironmentVariable,
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -28,6 +29,13 @@ def generate_launch_description():
     gz_resource_paths = [
         os.path.dirname(pkg_description),
     ]
+
+    # tugbot_warehouse.sdf pulls the warehouse shell, shelves, pallets, carts
+    # and Tugbot in from Gazebo Fuel. Those models are vendored into
+    # fuel_cache/ (see CMakeLists.txt) so pointing the Fuel client's cache
+    # root there makes it a cache hit instead of a network fetch -- no
+    # ~/.gz/fuel pre-fetch needed on a fresh machine.
+    fuel_cache_path = os.path.join(pkg_description, 'fuel_cache')
 
     xacro_file = os.path.join(pkg_description, 'urdf', 'pickplace_arm.urdf.xacro')
     # tugbot_warehouse.sdf is the only world this project ships, and the one
@@ -203,9 +211,11 @@ def generate_launch_description():
     set_gz_resource_path = [
         AppendEnvironmentVariable('GZ_SIM_RESOURCE_PATH', p) for p in gz_resource_paths
     ]
+    set_gz_fuel_cache_path = SetEnvironmentVariable('GZ_FUEL_CACHE_PATH', fuel_cache_path)
 
     return LaunchDescription([
         *set_gz_resource_path,
+        set_gz_fuel_cache_path,
         gazebo,
         robot_state_publisher,
         spawn_entity,

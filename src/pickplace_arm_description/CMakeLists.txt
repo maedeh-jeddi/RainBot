@@ -10,8 +10,12 @@ find_package(ament_cmake REQUIRED)
 # checkouts that could not be pushed with this project, so only what this robot
 # actually uses has been copied in here. Upstream licences sit alongside the
 # meshes as LICENSE.<package>.
+# `fuel_cache/` is a vendored copy of the Gazebo Fuel models the Tugbot
+# warehouse world pulls in (warehouse shell, shelves, pallets, carts, Tugbot).
+# Pointing GZ_FUEL_CACHE_PATH at it (see gazebo.launch.py) makes the world
+# load with no network access and no ~/.gz/fuel pre-fetch step.
 install(
-  DIRECTORY urdf launch rviz config worlds models meshes
+  DIRECTORY urdf launch rviz config worlds models meshes fuel_cache
   DESTINATION share/${PROJECT_NAME}
 )
 
