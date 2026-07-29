@@ -4,7 +4,7 @@
 carrying a **Franka Emika FR3** 7-DOF arm with a **Franka Hand** gripper,
 simulated in ROS 2 Humble + Gazebo Harmonic. Pairing a full arm with a mobile
 base means RainBot isn't limited to whatever is within reach of a fixed
-pedestal — it can navigate a whole warehouse floor and manipulate objects
+pedestal: it can navigate a whole warehouse floor and manipulate objects
 wherever they are, which is exactly what pick-and-place work in the real world
 demands: the parts, bins and drop-off points are rarely all next to each other.
 
@@ -15,7 +15,7 @@ on a saved map of a warehouse, drives to a table, picks three coloured cubes off
 it one at a time using its front camera, carries each across the room, places it
 on the matching-coloured column, verifies the placement actually landed, and
 parks. The same mobility that lets it reach the table also lets it carry each
-cube anywhere else in the mapped space — this mission is one example of the
+cube anywhere else in the mapped space; this mission is one example of the
 class of mobile pick-and-place tasks the platform is built for.
 
 Everything RainBot needs is in this repository. There are no external
@@ -52,13 +52,13 @@ description packages to clone.
 | Ubuntu | 22.04 |
 | ROS 2 | Humble |
 | Gazebo | Harmonic (`gz-sim8`, tested on 8.14.0) |
-| `ros_gz` | Harmonic variant — `ros-humble-ros-gzharmonic-*` |
+| `ros_gz` | Harmonic variant: `ros-humble-ros-gzharmonic-*` |
 
-### A working GPU driver — check this before anything else
+### A working GPU driver: check this before anything else
 
 **Gazebo must render on a real GPU.** If OpenGL falls back to Mesa's software
 rasteriser (`llvmpipe`), the simulation still starts and still looks correct,
-but it crawls, pegs every CPU core and cooks the machine — detection never
+but it crawls, pegs every CPU core and cooks the machine; detection never
 fires and the pick aborts. A faster CPU does not help; it just runs hotter.
 
 ```bash
@@ -66,7 +66,7 @@ sudo apt install -y mesa-utils
 glxinfo -B | grep -E "OpenGL vendor|OpenGL renderer"
 ```
 
-`llvmpipe`, `softpipe` or `swrast` means software rendering — fix that first.
+`llvmpipe`, `softpipe` or `swrast` means software rendering; fix that first.
 See [Troubleshooting](#everything-is-slow-and-the-fans-max-out).
 
 ### Gazebo Harmonic
@@ -101,17 +101,17 @@ sudo apt install -y \
 ```
 
 `gz_ros2_control` and `pymoveit2` are **included in this repository** (under
-`src/`) and are built from source with the rest of the workspace — there is
+`src/`) and are built from source with the rest of the workspace; there is
 nothing extra to clone.
 
-### World assets are vendored — no download on first run
+### World assets are vendored: no download on first run
 
 The Tugbot warehouse world pulls 7 models from Gazebo Fuel (warehouse shell,
 shelves, pallets, carts, the Tugbot itself). Those models are vendored into
 `src/pickplace_arm_description/fuel_cache/` (~17 MB, thumbnails stripped), and
 `gazebo.launch.py` points the Fuel client's cache root at that directory via
 `GZ_FUEL_CACHE_PATH` before Gazebo starts. The world resolves entirely from
-the repo on the very first launch — no network access needed, and nothing is
+the repo on the very first launch: no network access needed, and nothing is
 written to `~/.gz/fuel`.
 
 ---
@@ -156,14 +156,14 @@ Launch arguments:
 | Argument | Default | Effect |
 | --- | --- | --- |
 | `use_rviz` | `true` | Start RViz with the full mission layout. |
-| `use_gazebo_gui` | `true` | `false` runs Gazebo headless (server only). Sensor rendering happens on the server, so nothing is lost but the scenery — and it saves a lot of RAM. |
+| `use_gazebo_gui` | `true` | `false` runs Gazebo headless (server only). Sensor rendering happens on the server, so nothing is lost but the scenery, and it saves a lot of RAM. |
 
 On a machine with nothing else running, the mission starts driving **13–18
 seconds** after launch (measured across runs), and a full three-box run takes
 about **6 minutes** of wall clock.
 
 > **Before every launch, make sure no simulator is still running.** See
-> [Troubleshooting](#troubleshooting) — this is the single most common cause of
+> [Troubleshooting](#troubleshooting): this is the single most common cause of
 > strange failures in this project.
 
 ---
@@ -174,7 +174,7 @@ The world is the OpenRobotics *Tugbot in Warehouse* Fuel scene. The props are
 spawned into it by the launch file:
 
 - a **table** at map (2.30, 0.00), top surface 0.30 m off the floor
-- three **6 cm cubes** on the table — red, green, blue
+- three **6 cm cubes** on the table (red, green, blue)
 - three **columns** at map x = −1.0, 20 cm square, of heights **0.30 / 0.40 /
   0.50 m**, each painted the colour of the cube that belongs on it
 
@@ -186,17 +186,17 @@ matching columns.*
 For each cube, in order:
 
 1. **Navigate** to the table with Nav2 on the saved map (AMCL localization).
-2. **Approach** — a front-camera colour visual servo drives the base until the
+2. **Approach**: a front-camera colour visual servo drives the base until the
    cube sits under the gripper's fixed action point.
-3. **Grasp** — the arm descends straight down, the jaws close, and the grasp is
+3. **Grasp**: the arm descends straight down, the jaws close, and the grasp is
    *verified* from the finger joint position before anything else happens.
-4. **Weld** — a Gazebo `DetachableJoint` rigidly attaches the cube. Friction
+4. **Weld**: a Gazebo `DetachableJoint` rigidly attaches the cube. Friction
    alone lost the box on every carry; the weld cannot slip.
-5. **Carry** — the arm tucks into a compact carry pose and the base drives
+5. **Carry**: the arm tucks into a compact carry pose and the base drives
    across the room.
-6. **Place** — a second visual servo centres the base on the matching column,
+6. **Place**: a second visual servo centres the base on the matching column,
    the arm lowers the cube onto its top and releases.
-7. **Verify** — the front camera looks for the cube *above the column top*. If
+7. **Verify**: the front camera looks for the cube *above the column top*. If
    it is not there, the placement is reported FAILED rather than silently
    assumed good.
 
@@ -275,8 +275,8 @@ PickAndPlace → SearchAndPick → NavAndPick → Mission → Mission2 → Missi
 ```
 
 So `pick_and_place.py`, `search_and_pick.py`, `nav_and_pick.py`, `mission.py`
-and `mission_2.py` are all still imported at runtime. They are **not** dead code
-— they simply no longer have console entry points of their own.
+and `mission_2.py` are all still imported at runtime. They are **not** dead code;
+they simply no longer have console entry points of their own.
 
 ---
 
@@ -305,7 +305,7 @@ the ground, and `fr3_link0` stands directly on it.
 | Front RGB-D | Intel RealSense **D455** | bolted flat on the chassis front panel | (0.425, 0, 0.091) → **0.223 m** off the floor |
 | Wrist RGB-D | Intel RealSense **D405** | side of the Franka Hand, looking along the approach axis | `fr3_hand` (0.043, 0, 0.04) |
 | 2D LIDAR | SICK **TiM5xx** (TiM571) | standing on the top plate | scan plane **0.447 m** off the floor, 270° arc |
-| IMU | — | inside the chassis | (0, 0, 0.12) |
+| IMU | n/a | inside the chassis | (0, 0, 0.12) |
 
 Two geometry details that are easy to get wrong and are documented in the URDF:
 
@@ -361,8 +361,8 @@ centroid in `base_link`.
 
 ### Detection gates
 
-This warehouse is full of same-coloured clutter — pallet labels, hazard tape,
-shelf trim — and an ungated search will happily lock onto something 3 m away and
+This warehouse is full of same-coloured clutter (pallet labels, hazard tape,
+shelf trim), and an ungated search will happily lock onto something 3 m away and
 1 m up. Every colour detection is therefore **gated** to an axis-aligned box in
 the camera frame (X forward, Y left, Z up):
 
@@ -377,8 +377,8 @@ covers the cubes on the 0.30 m table and the full height of every column.
 
 > Gazebo publishes its RGB-D clouds in the **gz body convention** (X forward),
 > not the ROS optical convention. The sensors are tagged with `camera_link` /
-> `front_camera_link` accordingly. Tagging them with the optical frames — which
-> is what the `<gz_frame_id>` values *look* like they should be — makes RViz
+> `front_camera_link` accordingly. Tagging them with the optical frames (which
+> is what the `<gz_frame_id>` values *look* like they should be) makes RViz
 > rotate the cloud 90° out to the robot's side.
 
 ---
@@ -436,7 +436,7 @@ launch.
 
 | | cause | magnitude |
 | --- | --- | --- |
-| Benign | out-of-order `/clock` delivery — it is BEST_EFFORT over UDP | one 10 ms sim tick |
+| Benign | out-of-order `/clock` delivery (it is BEST_EFFORT over UDP) | one 10 ms sim tick |
 | **Real** | a second, orphaned `gz` server publishing onto the same `/clock` | whole seconds |
 
 Hence `--jump-threshold` (default 0.1 s): 5× the worst benign reordering,
@@ -473,8 +473,8 @@ Two things in that file are deliberate and should not be "tidied":
 - The Grid carries `Offset.Z = -0.13228`. The EKF runs `two_d_mode: true`, which
   forces `z = 0` on `odom → base_link`, so the model hangs 0.13228 m low in TF
   and a grid drawn at z=0 slices the wheels at the axles. This is cosmetic only
-  — AMCL, the costmaps and Nav2 are all 2D, and MoveIt plans `base_link`-relative
-  — so it is corrected in the view rather than in the filter. Fixing it "properly"
+  (AMCL, the costmaps and Nav2 are all 2D, and MoveIt plans `base_link`-relative),
+  so it is corrected in the view rather than in the filter. Fixing it "properly"
   would mean either letting z random-walk (nothing measures it) or re-rooting the
   URDF at `base_footprint`, which would shift every mission z by 0.13228 m,
   because the URDF root *is* MoveIt's planning frame.
@@ -525,13 +525,13 @@ Upstream licences are kept beside the meshes as `LICENSE.<package>`.
 
 The vendored xacros are faithful copies apart from mechanical path rewrites, so
 they can be diffed against upstream. **Project-specific changes are kept out of
-them** and live in `pickplace_arm.urdf.xacro` instead — the wheel-scale fix, for
+them** and live in `pickplace_arm.urdf.xacro` instead: the wheel-scale fix, for
 example, redefines the `a200_wheel` macro after the include rather than editing
 the vendored file.
 
 `gz_ros2_control` carries a local patch (guarding an Ignition-era install target
 so it does not break the Harmonic build). It is **already applied** in the
-vendored tree — there is nothing to patch after cloning. Because the package is
+vendored tree; there is nothing to patch after cloning. Because the package is
 now tracked as ordinary files rather than a checkout, that change is no longer
 visible to `git diff`, so it is written down in
 `src/gz_ros2_control/LOCAL_PATCH_NOTES.md`.
@@ -541,7 +541,7 @@ visible to `git diff`, so it is written down in
 ## Tuned constants worth knowing
 
 Most live in `pick_and_place.py` and `mission_2.py`. These are measured or
-derived, not guessed — change them only with a reason.
+derived, not guessed; change them only with a reason.
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
@@ -549,7 +549,7 @@ derived, not guessed — change them only with a reason.
 | `FRONT_CAM_Z` | 0.22328 | front lens height above the floor |
 | `BOX_SIZE` | 0.06 | cube edge |
 | `GRIP_OPEN` | 0.038 | jaws clear of the cube |
-| `GRIP_CLOSED` | 0.0 | grasp command — **must stay 0**, the empty-grasp check depends on it |
+| `GRIP_CLOSED` | 0.0 | grasp command (**must stay 0**), the empty-grasp check depends on it |
 | `GRIP_HOLD` | 0.029 | where the jaws park once the cube is welded |
 | `GRIPPER_X` | 0.70 | fixed claw action point ahead of `base_link` |
 | `MAX_REACH_X` | 0.85 | hard cap on any commanded forward reach |
@@ -575,7 +575,7 @@ The simulation runs at **RTF 1.000** (real time) with RViz and the Gazebo GUI
 both up. If it feels slow, something below has drifted.
 
 **RGB-D camera rendering dominates everything else.** Measured on
-`gazebo.launch.py` alone — no MoveIt, no Nav2, no RViz — so these are properties
+`gazebo.launch.py` alone (no MoveIt, no Nav2, no RViz), so these are properties
 of the simulator itself:
 
 | Configuration | RTF |
@@ -583,17 +583,17 @@ of the simulator itself:
 | Two RGB-D cameras at 30 Hz, Gazebo GUI up | **0.28** |
 | Same, headless | 0.47 |
 | Cameras at 15 Hz (front) / 5 Hz (wrist), GUI up | **0.80** |
-| Full stack — mission + Nav2 + MoveIt + RViz + GUI | **1.00** |
+| Full stack (mission + Nav2 + MoveIt + RViz + GUI) | **1.00** |
 
 Two things worth taking from that table:
 
 - The ROS side is nearly free. Gazebo alone with the GUI measured 0.281 and the
-  entire mission stack on top measured 0.296 — MoveIt and Nav2 cost almost
+  entire mission stack on top measured 0.296; MoveIt and Nav2 cost almost
   nothing. Chasing sim speed means looking at **sensors and rendering**, not at
   the behaviour nodes.
 - The camera rates are set to what the code actually consumes, with margin, and
   are documented in `pickplace_arm.gazebo.xacro`. Raising them back to 30 Hz
-  will quarter your real-time factor and buys nothing — the tightest consumer,
+  will quarter your real-time factor and buys nothing: the tightest consumer,
   the column approach servo, cannot loop faster than about 8 Hz.
 
 Other levers, in order of effect:
@@ -611,7 +611,7 @@ physically turning.
 
 Those numbers were measured with hardware-accelerated rendering. **On a
 machine falling back to Mesa `llvmpipe` the RTF collapses regardless of how fast
-the CPU is** — that is a driver problem, not a tuning problem, and no setting in
+the CPU is**: that is a driver problem, not a tuning problem, and no setting in
 this table will rescue it. See
 [Troubleshooting](#everything-is-slow-and-the-fans-max-out).
 
@@ -656,7 +656,7 @@ and a GPU-LIDAR on the CPU.
 | --- | --- |
 | No proprietary GPU driver | Install the vendor driver recommended by `ubuntu-drivers devices` |
 | Hybrid-graphics laptop rendering on the integrated GPU | Check `prime-select query`; offload the simulator with `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia` |
-| VM, WSL, container, remote desktop / X-forwarding | No GPU passthrough — `llvmpipe` is the only option there. Run on the host. |
+| VM, WSL, container, remote desktop / X-forwarding | No GPU passthrough; `llvmpipe` is the only option there. Run on the host. |
 | AMD / Intel GPU showing llvmpipe | `sudo apt install -y mesa-utils mesa-va-drivers libgl1-mesa-dri` |
 
 If the driver genuinely cannot be fixed, this at least removes both render
@@ -669,7 +669,7 @@ ros2 launch pickplace_arm_bringup mission_pickPlace.launch.py \
 
 ### Out of memory / the machine grinds
 
-The full stack — Gazebo server + GUI, RViz, MoveIt, Nav2 — is heavy on a 16 GB
+The full stack (Gazebo server + GUI, RViz, MoveIt, Nav2) is heavy on a 16 GB
 machine. Never run a `colcon build` while a simulation is up, and prefer:
 
 ```bash
@@ -681,7 +681,7 @@ server, so detection is unaffected.
 
 ### `ros2 launch` fails with "launch configuration ... does not exist"
 
-Launch executes its action list in order — a `DeclareLaunchArgument` must appear
+Launch executes its action list in order: a `DeclareLaunchArgument` must appear
 before anything that substitutes it.
 
 ### RViz exits immediately with SIGSEGV
@@ -713,20 +713,31 @@ colcon build --packages-select <pkg> --symlink-install
 - [x] Robot model (URDF/Xacro): Husky A200 + FR3 + Franka Hand
 - [x] `ros2_control` integration in Gazebo Harmonic
 - [x] MoveIt 2 collision-aware motion planning
-- [x] RGB-D camera detection — no pre-set pick pose
+- [x] RGB-D camera detection (no pre-set pick pose)
 - [x] Mobile base with LIDAR, IMU and wheel+IMU EKF odometry
 - [x] SLAM mapping and AMCL localization
 - [x] Nav2 autonomous navigation
 - [x] Rigid grasping via `DetachableJoint` (friction alone was not reliable)
 - [x] Full colour-sorting mission with verified placement
 - [x] Readiness-gated startup (13–18 s to mission start)
-- [x] Self-contained workspace — no external description packages
+- [x] Self-contained workspace (no external description packages)
 - [ ] Multi-robot / fleet operation
 - [ ] Real-hardware bring-up
 - [ ] General-purpose mobile pick-and-place beyond the colour-sorting demo
 
 ---
 
-## Author
+## Contributing
 
-Ali Pahlevani
+1. Fork the repository.
+2. Create a branch: `git checkout -b feature/your-feature`
+3. Commit changes: `git commit -m "Add your feature"`
+4. Push: `git push origin feature/your-feature`
+5. Open a pull request.
+
+Please include documentation updates. For major changes, open a *GitHub Issue* first to discuss the approach.
+
+---
+
++ Questions? Reach out: **a.pahlevani1998@gmail.com**
++ LinkedIn: **https://www.linkedin.com/in/ali-pahlevani/**
