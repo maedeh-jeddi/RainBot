@@ -724,6 +724,7 @@ colcon build --packages-select <pkg> --symlink-install
 - [ ] Multi-robot / fleet operation
 - [ ] Real-hardware bring-up
 - [ ] General-purpose mobile pick-and-place beyond the colour-sorting demo
+- [ ] ROS 2 Jazzy support
 
 ---
 
