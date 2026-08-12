@@ -44,18 +44,36 @@ WALL_CLEAR = 0.55
 # plus margin rather than a guess at how big things are.
 OBJ_CLEAR = 0.55
 PATH_CLEAR = 1.00
+# A TURN POINT is where an actor stands still for two seconds before reversing,
+# so it needs more room than somewhere it merely walks past: at 0.7 m from a
+# trolley a stationary figure reads as standing inside it, which is exactly what
+# was happening - the walkers appeared to enter an obstacle, pause, then come
+# back out. The extra margin is only wanted from OBJECTS; 0.7 m from a wall
+# looks perfectly normal, and demanding more makes the narrow corridors
+# unusable.
+TURN_OBJ_CLEAR = 1.20
+TURN_WALL_CLEAR = 0.70
 
 
 def _desc_share():
     return get_package_share_directory('pickplace_arm_description')
 
 
-def wall_grid():
-    """Occupancy of the building's walls at person height, plus its origin."""
+def wall_grid(which='visual'):
+    """Occupancy of the building's walls at person height, plus its origin.
+
+    VISUAL by default, not collision. The two differ: the collision mesh leaves
+    the door openings clear so a robot can drive through, while the visual mesh
+    carries the door panels and glazing. Checking against collision therefore
+    passes paths that walk straight through a door you can see - which is what
+    happened, and why the actors appeared to walk into walls while this said
+    every path had 0.7 m of clearance."""
+    name = ('aws_robomaker_hospital_floor_01_walls_collision.dae'
+            if which == 'collision'
+            else 'aws_robomaker_hospital_floor_01_walls_visual.dae')
     dae = os.path.join(
         _desc_share(), 'aws_hospital_models',
-        'aws_robomaker_hospital_floor_01_walls', 'meshes',
-        'aws_robomaker_hospital_floor_01_walls_collision.dae')
+        'aws_robomaker_hospital_floor_01_walls', 'meshes', name)
     root = ET.parse(dae).getroot()
 
     src = {'#' + s.get('id'): s for s in root.iter(f'{NS}source') if s.get('id')}
@@ -252,7 +270,13 @@ def world_contents():
     furn = []
     for blk in re.findall(r'<include>(.*?)</include>', w, re.S):
         n = re.search(r'<name>([^<]+)</name>', blk)
-        u = re.search(r'models/([^<\s]+)</uri>', blk)
+        # Two URI shapes live in this world: Fuel models are
+        # '.../OpenRobotics/models/Name' while the vendored AWS ones are just
+        # 'model://name'. Matching only the first silently fell back to a
+        # 0.6 x 0.6 m default for EVERY AWS model - including the 4.84 x 3.02 m
+        # reception desk, which is why a walker was routed straight through it
+        # while this check reported the path clear.
+        u = re.search(r'(?:models/|model://)([^<\s]+)</uri>', blk)
         q = re.search(r'<pose>([^<]+)</pose>', blk)
         if not n or 'floor_01' in n.group(1):
             continue
@@ -328,10 +352,26 @@ def check():
                 d = seg_point(a, b, sp)
                 if d < worst_obj[0]:
                     worst_obj = (d, 'person ' + sn)
-        ok = worst_obj[0] >= OBJ_CLEAR and worst_wall[0] >= WALL_CLEAR
+        # Turn points: the first waypoint and the far end of the out-and-back.
+        turn_pts = [pts[0], pts[len(pts) // 2]]
+        turn_ok = True
+        turn_worst = (99.0, None)
+        for q in turn_pts:
+            o = min((seg_rect(q, q, ox, oy, ex, ey, samples=1)
+                     for _, ox, oy, ex, ey in furn), default=99.0)
+            wl = wall_clear(q)
+            if o < turn_worst[0]:
+                turn_worst = (o, q)
+            if o < TURN_OBJ_CLEAR or wl < TURN_WALL_CLEAR:
+                turn_ok = False
+
+        ok = (worst_obj[0] >= OBJ_CLEAR and worst_wall[0] >= WALL_CLEAR
+              and turn_ok)
         bad += 0 if ok else 1
+        note = '' if turn_ok else '  <-- TURNS TOO CLOSE'
         print(f'  {name:24s} object {worst_obj[0]:5.2f} m ({worst_obj[1]})'
-              f'   wall {worst_wall[0]:5.2f} m   {"OK" if ok else "<-- CLIPS"}')
+              f'   wall {worst_wall[0]:5.2f} m   turn {turn_worst[0]:5.2f} m'
+              f'   {"OK" if ok else "<-- CLIPS"}{note}')
 
     names = sorted(moving)
     for i in range(len(names)):
