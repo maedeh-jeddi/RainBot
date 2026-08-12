@@ -1,0 +1,113 @@
+<?xml version="1.0" ?>
+<!-- A walking person that is a real, MOVING obstacle.
+
+     The geometry is OpenRobotics' Fuel "Walking person" (mesh and inertial
+     copied, mesh URIs left pointing at Fuel so they resolve out of the vendored
+     fuel_cache like every other downloaded model). What this adds is the
+     VelocityControl system, so the model can be driven along a corridor from
+     /model/<name>/cmd_vel instead of standing still.
+
+     WHY THIS IS A MODEL AND NOT AN SDF <actor>: actors in gz-sim carry no
+     collision geometry at all. They animate, and the LIDAR's rendering-based
+     scan may even see them, but contact physics does not, and Nav2's costmaps
+     get nothing to avoid. An actor pedestrian is scenery. This is an obstacle.
+
+     WHY IT IS SPAWNED AT MISSION TIME AND NOT PLACED IN hospital_lab.sdf:
+     because it moves. Anything in the world file when the map is built gets
+     baked into the static map, and a moving obstacle baked into a static map is
+     worse than useless - the robot forever avoids the empty space where the
+     person WAS and knows nothing about where they now are. Dynamic obstacles
+     belong to the live obstacle layer, which is fed by the LIDAR, so the map
+     must be built without them. This is exactly the mistake the first hospital
+     map made: the pedestrians were static scenery, got mapped as walls, and the
+     robot then wedged itself against one of them in the corridor.
+
+     VelocityControl sets the model's velocity directly rather than applying a
+     force, which is what keeps an upright 80 kg mesh from toppling or spinning
+     the moment it is pushed. -->
+<sdf version="1.9">
+  <model name="pedestrian">
+    <link name="link">
+      <inertial>
+        <pose>0 0 0.95 0 0 0</pose>
+        <mass>80.0</mass>
+        <inertia>
+          <ixx>27.82</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>24.88</iyy><iyz>0</iyz>
+          <izz>4.57</izz>
+        </inertia>
+      </inertial>
+      <!-- Collision is an upright cylinder, NOT the person mesh.
+           Two reasons, and the first is not cosmetic:
+
+           VelocityControl holds the commanded linear velocity every step,
+           including z = 0. The Fuel model's full-mesh collision starts very
+           slightly interpenetrating the floor, and with the downward velocity
+           pinned at zero the contact solver pushes the model up out of that
+           overlap and it never falls back - measured, the pedestrian popped
+           from z = 0.010 to z = 0.171 the instant it was first commanded and
+           stayed there, walking along on thin air.
+
+           A single primitive whose base sits exactly on z = 0 has no initial
+           overlap to be pushed out of, so the pedestrian stays on the floor.
+           It is also far cheaper for the solver than a full character mesh.
+
+           Nothing is lost for perception: the LIDAR is a rendering sensor and
+           still sees the VISUAL mesh below, so the scan silhouette is the
+           person, not the cylinder. Collision geometry only has to be roughly
+           person-shaped for contact, and 0.25 m radius by 1.7 m tall is. -->
+      <!-- Gravity off, and the collision cylinder deliberately STARTS 0.05 m
+           above the floor so it never touches it.
+
+           This is the fix for a pedestrian that walked along climbing into the
+           air. VelocityControl pins the commanded velocity every step, z
+           included, so a body resting on the ground can be nudged up out of
+           contact by the solver but has no downward velocity left to come back
+           - the error ratchets. Measured with the mesh collision: z went 0.010
+           to 0.171 on the first command. Swapping in a cylinder whose base sat
+           exactly on z = 0 did not help either: rest was a clean z = 0.000, but
+           five seconds of walking still lifted it to 0.247.
+
+           With no ground contact there is nothing to ratchet against, and with
+           gravity off nothing needs the contact in the first place: height is
+           whatever it was spawned at, and the pinned velocity holds it there.
+           The VISUAL mesh still has its feet at z = 0, so it looks right and
+           the LIDAR - a rendering sensor - still sees a person-shaped
+           silhouette. The cylinder is only there so the robot cannot drive
+           through the body. -->
+      <gravity>false</gravity>
+      <collision name="body">
+        <pose>0 0 0.90 0 0 0</pose>
+        <geometry><cylinder><radius>0.25</radius><length>1.70</length></cylinder></geometry>
+      </collision>
+      <visual name="visual">
+        <pose>0 0 -0.02 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>https://fuel.gazebosim.org/1.0/openrobotics/models/walking%20person/3/files/meshes/walking.dae</uri>
+          </mesh>
+        </geometry>
+      </visual>
+    </link>
+
+    <plugin filename="gz-sim-velocity-control-system"
+            name="gz::sim::systems::VelocityControl">
+    </plugin>
+
+    <!-- Publishes the model pose on /model/<name>/pose. The patrol node needs
+         it to hold the walking lane closed-loop: VelocityControl accepts a
+         twist but reports nothing back, so without this a pedestrian shoved
+         off line during a collision would keep walking down the middle of the
+         corridor for the rest of the run, and any later claim that the robot
+         "passed a pedestrian in its lane" would be untestable. -->
+    <plugin filename="gz-sim-pose-publisher-system"
+            name="gz::sim::systems::PosePublisher">
+      <publish_link_pose>false</publish_link_pose>
+      <publish_collision_pose>false</publish_collision_pose>
+      <publish_visual_pose>false</publish_visual_pose>
+      <publish_model_pose>true</publish_model_pose>
+      <use_pose_vector_msg>false</use_pose_vector_msg>
+      <update_frequency>20</update_frequency>
+    </plugin>
+  </model>
+</sdf>

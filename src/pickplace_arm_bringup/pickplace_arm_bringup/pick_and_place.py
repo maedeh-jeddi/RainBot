@@ -280,6 +280,15 @@ def scan_quat(pitch, yaw=0.0):
 
 
 class PickAndPlace(Node):
+    # Which Gazebo model each detection colour corresponds to, and therefore
+    # which DetachableJoint topic pair welds it. In the colour-sorting world a
+    # colour IS the model ('red' -> box_red), so this is a plain mapping; a
+    # mission carrying something else overrides it, e.g. the hospital run grasps
+    # a rack whose grip block is red but whose model is sample_rack. Colour and
+    # model name used to be the same string throughout, which is why the topics
+    # were built inline from the colour.
+    GRASP_MODELS = {c: f'box_{c}' for c in BOX_COLORS}
+
     def __init__(self):
         super().__init__('pick_and_place')
         cbg = ReentrantCallbackGroup()
@@ -336,9 +345,9 @@ class PickAndPlace(Node):
         # verified grasp, because a friction hold slipped mid-carry on every
         # Tugbot-warehouse run. These publish through the ros_gz bridge.
         self._attach_pubs, self._detach_pubs = {}, {}
-        for c in BOX_COLORS:
-            self._attach_pubs[c] = self.create_publisher(Empty, f'/box_{c}/attach', 10)
-            self._detach_pubs[c] = self.create_publisher(Empty, f'/box_{c}/detach', 10)
+        for c, model in self.GRASP_MODELS.items():
+            self._attach_pubs[c] = self.create_publisher(Empty, f'/{model}/attach', 10)
+            self._detach_pubs[c] = self.create_publisher(Empty, f'/{model}/detach', 10)
         self._attached_color = None
         # The plugins weld each box the moment it spawns -- metres away, with
         # the robot about to drive off and drag it. Break those welds before

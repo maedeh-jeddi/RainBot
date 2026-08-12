@@ -1,0 +1,54 @@
+<?xml version="1.0" ?>
+<!-- Delivery dock: the marked drop zone the sample rack is set down on, sitting
+     on the ward bench's transfer shelf.
+
+     It exists because the placement is done by visual servo, not dead
+     reckoning. Nav2 arrives with roughly 0.2 m of position error, and the
+     bench's shelf is only 0.30 m deep against a 0.16 m rack, so a blind place
+     from the nav pose has about 0.07 m of margin either side - not enough. The
+     mission therefore re-uses the same front-camera colour servo the warehouse
+     mission centres on its columns with, and that needs a saturated colour to
+     lock onto. A bare steel shelf gives it nothing.
+
+     GREEN, deliberately: the rack's grip block is red, so target and payload
+     never share a colour. In the warehouse each column is painted its own box's
+     colour, which forces _placement_landed to gate its verification tightly
+     enough to keep the pillar out of the blob. Here the post-release check just
+     looks for red above the dock and the dock itself cannot be mistaken for it.
+
+     0.08 m tall rather than a flush pad: the front camera sits 0.223 m off the
+     floor, so a pad lying flat on a 0.30 m shelf would be viewed almost edge-on
+     and segment poorly. This height presents a 0.08 m vertical face at camera z
+     +0.077..+0.157, comfortably inside the detection gate.
+
+     Sizing against the shelf it stands on (shelf spans x 13.85..14.15, i.e.
+     0.30 deep, and 1.00 m wide): 0.25 x 0.30 leaves the dock fully on the shelf
+     with 0.025 m to spare front and back, and gives the 0.16 x 0.12 rack a
+     surface with margin all round.
+
+     Model origin is the BOTTOM face, so it spawns at the shelf top height
+     (z = 0.30) and its own top - where the rack lands - is at z = 0.38. -->
+<sdf version="1.9">
+  <model name="delivery_dock">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision">
+        <pose>0 0 0.04 0 0 0</pose>
+        <geometry><box><size>0.25 0.30 0.08</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.9</mu><mu2>0.9</mu2></ode></friction>
+          <contact><ode><kp>1e6</kp><kd>1.0</kd></ode></contact>
+        </surface>
+      </collision>
+      <visual name="visual">
+        <pose>0 0 0.04 0 0 0</pose>
+        <geometry><box><size>0.25 0.30 0.08</size></box></geometry>
+        <material>
+          <ambient>0.05 0.75 0.10 1</ambient>
+          <diffuse>0.06 0.85 0.12 1</diffuse>
+          <specular>0.15 0.15 0.15 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

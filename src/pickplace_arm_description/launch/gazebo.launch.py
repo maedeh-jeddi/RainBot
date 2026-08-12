@@ -1,9 +1,10 @@
 import os
+import re
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
-    AppendEnvironmentVariable, IncludeLaunchDescription, RegisterEventHandler,
-    SetEnvironmentVariable,
+    AppendEnvironmentVariable, ExecuteProcess, IncludeLaunchDescription,
+    RegisterEventHandler, SetEnvironmentVariable,
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -26,8 +27,25 @@ def generate_launch_description():
     # geometry now lives in this package's own meshes/ (see CMakeLists), so one
     # entry covers the Husky A200, the FR3 + Franka Hand, and the RealSense/SICK
     # sensor housings alike.
+    #
+    # The second entry is this package's own models/ directory, so a world can
+    # say model://lab_bench for a prop that ships here. The parent-of-share
+    # entry above cannot serve those: it resolves model://<x> to
+    # .../share/<x>, whereas these live at .../share/<pkg>/models/<x>.
+    # tugbot_warehouse.sdf never needed it (its local props are spawned by
+    # file path from mission_pickPlace.launch.py); hospital_lab.sdf does,
+    # because the benches are fixed building furniture rather than mission
+    # payload and belong in the world file.
+    #
+    # The third is the vendored AWS RoboMaker hospital assets. aws_hospital.sdf
+    # keeps AWS's own model:// URIs for the models that ship with that world
+    # (the building shell, curtains, elevator, nurses' station), so they resolve
+    # from here; everything else in that world is an OpenRobotics Fuel model and
+    # comes out of fuel_cache like the rest.
     gz_resource_paths = [
         os.path.dirname(pkg_description),
+        os.path.join(pkg_description, 'models'),
+        os.path.join(pkg_description, 'aws_hospital_models'),
     ]
 
     # tugbot_warehouse.sdf pulls the warehouse shell, shelves, pallets, carts
@@ -86,22 +104,46 @@ def generate_launch_description():
         parameters=[robot_description, {'use_sim_time': True}],
     )
 
-    spawn_entity = Node(
-        package='ros_gz_sim',
-        executable='create',
-        arguments=[
-            '-topic', '/robot_description',
-            '-name', 'pickplace_arm',
-            '-x', spawn_x,
-            '-y', spawn_y,
-            # base_link (the root) is the Husky A200's chassis origin, which
-            # sits (wheel_radius - wheel_vertical_offset) = 0.1651 - 0.03282
-            # = 0.13228 m above the ground so the wheels touch the floor;
-            # base_footprint hangs exactly that far below it. A small margin
-            # is added so the robot settles onto the floor rather than
-            # spawning interpenetrating it.
-            '-z', '0.14'
-        ],
+    # ros_gz_sim's `create` asks Gazebo for the list of world names before it
+    # spawns anything, and gives up after a fixed timeout it offers no flag to
+    # raise. A small world answers instantly; aws_hospital.sdf pulls in 182
+    # models with their meshes and does not, so create died with "Timed out when
+    # getting world names" and took the whole launch with it. Passing -world
+    # skips that lookup entirely.
+    #
+    # The name is read out of the world file rather than derived from its
+    # filename, because the two do not match: tugbot_warehouse.sdf declares
+    # <world name='world_demo'>.
+    with open(world_file) as fh:
+        world_match = re.search(r"<world\s+name=['\"]([^'\"]+)['\"]", fh.read())
+    world_entity_name = world_match.group(1) if world_match else 'default'
+
+    # Spawning is GATED ON GAZEBO ACTUALLY BEING READY, not on a delay.
+    #
+    # -world alone was not enough. create then found the world but its call to
+    # /world/<name>/create timed out after 5 s, because the server was still
+    # streaming in aws_hospital.sdf's 182 models and could not service the
+    # request; create has no retry and no timeout flag, so it died and took the
+    # launch with it. Waiting for the service to be ADVERTISED, then calling it,
+    # removes the race for any world without slowing a small one down: in
+    # tugbot_warehouse the loop falls through on its first check.
+    #
+    # This is the same reasoning as the mission launch's readiness gates - wait
+    # for the condition, not for a guessed number of seconds.
+    #
+    # base_link (the root) is the Husky A200's chassis origin, which sits
+    # (wheel_radius - wheel_vertical_offset) = 0.1651 - 0.03282 = 0.13228 m
+    # above the ground so the wheels touch the floor; base_footprint hangs
+    # exactly that far below it. The small extra margin lets the robot settle
+    # onto the floor rather than spawning interpenetrating it.
+    spawn_entity = ExecuteProcess(
+        cmd=['bash', '-c',
+             f'until gz service -l 2>/dev/null | '
+             f'grep -q "^/world/{world_entity_name}/create$"; do sleep 2; done; '
+             f'exec ros2 run ros_gz_sim create '
+             f'-world {world_entity_name} '
+             f'-topic /robot_description -name pickplace_arm '
+             f'-x {spawn_x} -y {spawn_y} -z 0.14'],
         output='screen',
     )
 
@@ -189,6 +231,22 @@ def generate_launch_description():
             '/box_green/detach@std_msgs/msg/Empty]gz.msgs.Empty',
             '/box_blue/attach@std_msgs/msg/Empty]gz.msgs.Empty',
             '/box_blue/detach@std_msgs/msg/Empty]gz.msgs.Empty',
+            # Blood sample rack (hospital_lab.sdf mission). Bridged
+            # unconditionally: a bridge for a topic nothing publishes on costs
+            # nothing, and keeping one bridge node for both missions avoids a
+            # second, world-dependent bridge configuration.
+            '/sample_rack/attach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/sample_rack/detach@std_msgs/msg/Empty]gz.msgs.Empty',
+            # Walking pedestrians (hospital_lab.sdf). cmd_vel drives them
+            # (ROS -> gz, hence ']'), pose comes back (gz -> ROS, '[') so the
+            # patrol node can hold each one in its lane. Bridged here with the
+            # rest rather than from the mission launch so there is still exactly
+            # one bridge node; the topics simply carry nothing in a world with
+            # no pedestrians spawned.
+            '/model/pedestrian_0/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
+            '/model/pedestrian_1/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
+            '/model/pedestrian_0/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
+            '/model/pedestrian_1/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
         ],
         output='screen',
     )

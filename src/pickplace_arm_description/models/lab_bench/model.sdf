@@ -1,0 +1,98 @@
+<?xml version="1.0" ?>
+<!-- Lab counter with a low transfer shelf, used at both ends of the blood
+     sample run: samples are collected off the shelf in the lab and set down on
+     an identical bench in the destination ward.
+
+     The shelf is what makes this usable, and its height is not cosmetic. The
+     front RGB-D camera is bolted to the Husky's front bumper at base_link
+     (0.406, 0, 0.091), i.e. 0.223 m above the floor, so anything standing on a
+     realistic 0.90 m counter top is far above its horizon and cannot be
+     detected on approach. The shelf puts the payload at 0.30 m - the same
+     height as the table the colour-sorting mission already picks from - so the
+     existing front-camera detection and approach geometry carry over unchanged,
+     while the bench still reads as a real lab counter.
+
+     Shelf top is at z = 0.30 exactly, so a model whose origin is its own base
+     (sample_rack is) spawns at z = 0.30.
+
+     The shelf protrudes in -x, so a bench placed with yaw = 0 presents its
+     shelf to a robot approaching from -x. -->
+<sdf version="1.9">
+  <model name="lab_bench">
+    <static>true</static>
+    <link name="link">
+
+      <!-- Counter carcass: 0.70 deep, 2.00 wide, 0.90 tall. -->
+      <collision name="carcass_collision">
+        <pose>0 0 0.45 0 0 0</pose>
+        <geometry><box><size>0.70 2.00 0.90</size></box></geometry>
+      </collision>
+      <visual name="carcass_visual">
+        <pose>0 0 0.45 0 0 0</pose>
+        <geometry><box><size>0.70 2.00 0.90</size></box></geometry>
+        <material>
+          <ambient>0.80 0.82 0.84 1</ambient>
+          <diffuse>0.88 0.90 0.92 1</diffuse>
+          <specular>0.2 0.2 0.2 1</specular>
+        </material>
+      </visual>
+
+      <!-- Worktop, overhanging the carcass on every side. -->
+      <collision name="worktop_collision">
+        <pose>0 0 0.92 0 0 0</pose>
+        <geometry><box><size>0.76 2.06 0.04</size></box></geometry>
+      </collision>
+      <visual name="worktop_visual">
+        <pose>0 0 0.92 0 0 0</pose>
+        <geometry><box><size>0.76 2.06 0.04</size></box></geometry>
+        <material>
+          <ambient>0.28 0.30 0.33 1</ambient>
+          <diffuse>0.36 0.39 0.42 1</diffuse>
+          <specular>0.4 0.4 0.4 1</specular>
+        </material>
+      </visual>
+
+      <!-- Transfer shelf: slab top at z = 0.30, protruding 0.30 m in -x. -->
+      <collision name="shelf_collision">
+        <pose>-0.50 0 0.275 0 0 0</pose>
+        <geometry><box><size>0.30 1.00 0.05</size></box></geometry>
+      </collision>
+      <visual name="shelf_visual">
+        <pose>-0.50 0 0.275 0 0 0</pose>
+        <geometry><box><size>0.30 1.00 0.05</size></box></geometry>
+        <material>
+          <ambient>0.55 0.57 0.60 1</ambient>
+          <diffuse>0.68 0.70 0.73 1</diffuse>
+          <specular>0.5 0.5 0.5 1</specular>
+        </material>
+      </visual>
+
+      <!-- Shelf legs, inset from the slab's outer corners. -->
+      <collision name="shelf_leg_left_collision">
+        <pose>-0.62 0.45 0.1375 0 0 0</pose>
+        <geometry><box><size>0.05 0.05 0.275</size></box></geometry>
+      </collision>
+      <visual name="shelf_leg_left_visual">
+        <pose>-0.62 0.45 0.1375 0 0 0</pose>
+        <geometry><box><size>0.05 0.05 0.275</size></box></geometry>
+        <material>
+          <ambient>0.45 0.47 0.50 1</ambient>
+          <diffuse>0.58 0.60 0.63 1</diffuse>
+        </material>
+      </visual>
+      <collision name="shelf_leg_right_collision">
+        <pose>-0.62 -0.45 0.1375 0 0 0</pose>
+        <geometry><box><size>0.05 0.05 0.275</size></box></geometry>
+      </collision>
+      <visual name="shelf_leg_right_visual">
+        <pose>-0.62 -0.45 0.1375 0 0 0</pose>
+        <geometry><box><size>0.05 0.05 0.275</size></box></geometry>
+        <material>
+          <ambient>0.45 0.47 0.50 1</ambient>
+          <diffuse>0.58 0.60 0.63 1</diffuse>
+        </material>
+      </visual>
+
+    </link>
+  </model>
+</sdf>

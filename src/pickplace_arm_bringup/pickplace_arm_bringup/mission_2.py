@@ -214,6 +214,46 @@ class Mission2(Mission):
     # COLUMN_X_OFFSET, i.e. the column centre at the normal stop; verified
     # reachable for all three column heights.
     COLUMN_PLACE_X = COLUMN_STOP_X + COLUMN_X_OFFSET
+    # Height of the grasped feature's CENTRE above the payload's own underside.
+    # The jaws close on that feature, so the fingertip frame sits exactly this
+    # far above whatever surface the payload has to end up standing on - which
+    # is what turns a target's top height into a fingertip z, both when picking
+    # and when placing.
+    #
+    # For a cube it is simply half the cube, which is why this used to be
+    # written inline as BOX_SIZE / 2.0. It stops being half of anything as soon
+    # as the payload is not a cube: the sample rack is grasped by a block on a
+    # gantry 0.17 m above its tray, so a placement computed as BOX_SIZE / 2.0
+    # would drive the rack 0.14 m THROUGH the shelf it was meant to stand on.
+    PAYLOAD_GRIP_HEIGHT = BOX_SIZE / 2.0
+    # Where the grasped feature reads (base_link z) with the payload sitting on
+    # the FLOOR. _placement_landed compares against this to tell "on the target"
+    # from "dropped beside it".
+    PAYLOAD_FLOOR_Z = EXPECTED_BOX_Z
+    # Colour to look for when verifying a placement. None means "the target's
+    # own colour", which is right in the warehouse because each column is
+    # painted its box's colour. The hospital run sets it: the dock is green and
+    # the rack is red, so the check looks for the rack rather than the dock.
+    PLACE_VERIFY_COLOR = None
+    # Colour of the placement TARGET, for the servo that centres the base on it.
+    # None means "the same colour as the payload" - true in the warehouse, where
+    # each column is painted its own box's colour, and the reason this was not a
+    # separate value before. It is false anywhere the target is a fixture rather
+    # than a colour-matched pillar: the hospital's dock is green and its payload
+    # red, and using the payload's colour there finds nothing at all.
+    TARGET_COLOR = None
+    # Unit vector from the placement target to the standoff the base is sent to,
+    # i.e. which SIDE the target is approached from. Yaw is derived from it, so
+    # the base always arrives facing the target.
+    #
+    # (1, 0) reproduces the warehouse exactly: its columns are approached from
+    # +x facing -x, because the robot comes from the table on that side. It was
+    # hardcoded as col_x + NAV_STANDOFF with yaw = pi, which silently assumed
+    # every world approaches from the same side. In the hospital the robot
+    # arrives from the corridor to the WEST while the bench body sits east of
+    # the dock, so the hardcoded side parked it behind the bench looking at its
+    # back panel, with the dock hidden on the far side.
+    PLACE_APPROACH_DIR = (1.0, 0.0)
 
     def __init__(self):
         super().__init__()
@@ -435,7 +475,7 @@ class Mission2(Mission):
         # is measured from the floor, so it has to be lifted into the base_link
         # frame; the box centre then sits half a box above the column top, and
         # the fingertip frame is at the box centre.
-        top_z = GROUND_Z + height + BOX_SIZE / 2.0
+        top_z = GROUND_Z + height + self.PAYLOAD_GRIP_HEIGHT
         # The over-column waypoint must clear the column TOP. The held box now
         # hangs ~BOX_SIZE/2 below the fingertip frame, NOT the ~0.08 m it hung
         # below gripper_base, so the clearance term below shrank accordingly.
@@ -564,24 +604,34 @@ class Mission2(Mission):
         # the camera actually locked onto was the top 2 cm of the blue column.
         # Starting 5 mm above the top excludes the pillar entirely, so any
         # detection inside the gate really is the box.
-        lo = height + 0.005 - FRONT_CAM_Z
-        hi = height + BOX_SIZE + 0.02 - FRONT_CAM_Z
+        # The gate is centred on where the grasped feature must end up, i.e.
+        # PAYLOAD_GRIP_HEIGHT above the target top, and starts above the target
+        # top so a same-coloured pillar cannot creep into the blob. For a cube
+        # those two coincide (the feature IS the box) and this is the original
+        # height+0.005 .. height+BOX_SIZE+0.02 band; for a payload whose colour
+        # sits high on a gantry the band follows it up instead of looking at
+        # empty air just above the target.
+        verify_color = self.PLACE_VERIFY_COLOR or color
+        mark_z = height + self.PAYLOAD_GRIP_HEIGHT
+        lo = max(height + 0.005, mark_z - BOX_SIZE) - FRONT_CAM_Z
+        hi = mark_z + BOX_SIZE - FRONT_CAM_Z
         gate = (0.05, 1.5, -0.6, 0.6, lo, hi)
-        det = self.detect_box_front(timeout_sec=2.0, color=color, gate=gate)
+        det = self.detect_box_front(timeout_sec=2.0, color=verify_color, gate=gate)
         if det is None:
-            log.error(f'[place] no {color} box above column {tag_id}\'s top '
-                      f'after release -- it is not on the column. FAILED.')
+            log.error(f'[place] no {verify_color} payload above target '
+                      f'{tag_id}\'s top after release -- it is not on the '
+                      f'target. FAILED.')
             return False
         bz = det[2]
-        floor_z = EXPECTED_BOX_Z
-        placed_z = EXPECTED_BOX_Z + height
+        floor_z = self.PAYLOAD_FLOOR_Z
+        placed_z = self.PAYLOAD_FLOOR_Z + height
         if bz < (floor_z + placed_z) / 2.0:
-            log.error(f'[place] {color} box is at z={bz:.3f} -- that is floor '
-                      f'level (~{floor_z:.3f}), not column {tag_id} top '
+            log.error(f'[place] {verify_color} payload is at z={bz:.3f} -- that '
+                      f'is floor level (~{floor_z:.3f}), not target {tag_id} top '
                       f'(~{placed_z:.3f}). Placement FAILED.')
             return False
-        log.info(f'[place] verified: {color} box at z={bz:.3f} '
-                 f'(column top ~{placed_z:.3f})')
+        log.info(f'[place] verified: {verify_color} payload at z={bz:.3f} '
+                 f'(target top ~{placed_z:.3f})')
         return True
 
     # --- full mission -------------------------------------------------------
@@ -631,7 +681,11 @@ class Mission2(Mission):
             # camera's view entirely (confirmed live). Restored right after so
             # the looser default (which avoids skid-steer oscillation) still
             # applies to every other goal.
-            approach = (col_xy[0] + NAV_STANDOFF, col_xy[1], math.pi)
+            target_color = self.TARGET_COLOR or color
+            adx, ady = self.PLACE_APPROACH_DIR
+            approach = (col_xy[0] + adx * NAV_STANDOFF,
+                        col_xy[1] + ady * NAV_STANDOFF,
+                        math.atan2(-ady, -adx))
             self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
             nav_ok = self.navigate_to(self.make_map_goal(*approach))
             self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
@@ -650,7 +704,7 @@ class Mission2(Mission):
                 log.error(f'{color} box was DROPPED during the carry to column '
                           f'{tag_id} (gripper is empty on arrival) -- aborting.')
                 return
-            if not self.place_on_column(tag_id, height, col_xy, color):
+            if not self.place_on_column(tag_id, height, col_xy, target_color):
                 log.error(f'Failed to place on column {tag_id} -- aborting.')
                 return
 

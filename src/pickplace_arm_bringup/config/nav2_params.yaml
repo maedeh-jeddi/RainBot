@@ -1,8 +1,24 @@
 # Nav2 parameters for the pickplace_arm 4-wheel skid-steer mobile base.
-# Robot footprint approximated as a 0.25 m radius circle (covers the
-# 0.38x0.26 m chassis plus the wheels that protrude past it). Uses the
-# RegulatedPurePursuitController, which is robust for differential/skid-steer
-# drives. SLAM (slam_toolbox) supplies map -> odom, so AMCL is not used.
+#
+# FOOTPRINT: the true 0.99 x 0.67 m Husky A200 rectangle, not a circle. It was a
+# 0.25 m radius circle, described here as covering "the 0.38x0.26 m chassis plus
+# the wheels" -- that is the PLACEHOLDER chassis this project used before the
+# A200, and the value never moved with the robot. The A200 is more than twice
+# as long and needs a 0.598 m circumscribed radius, so Nav2 was steering a robot
+# less than half the size of the real one.
+#
+# In the open warehouse that never showed. In the hospital's 3 m corridor it
+# does: carrying the sample rack to the ward, the base drove its front-right
+# corner into a standing pedestrian and wedged there, with the controller
+# aborting follow_path over and over (ground truth afterwards: base at world
+# 6.17, 0.10, corner inside the pedestrian's footprint). A circle big enough to
+# contain the A200 would instead refuse a third of that corridor and push the
+# table/bench approach poses into inflated space, so the fix is the real
+# polygon rather than a bigger circle.
+#
+# Uses the RegulatedPurePursuitController, which is robust for
+# differential/skid-steer drives. SLAM (slam_toolbox) supplies map -> odom
+# during mapping; the missions run AMCL instead.
 
 bt_navigator:
   ros__parameters:
@@ -130,7 +146,11 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      robot_radius: 0.25
+      # The A200 is 0.99 m long x 0.67 m wide. A circle cannot describe that
+      # without either cutting the corners off or wasting a third of the
+      # corridor, so the footprint is the actual rectangle, base_link at the
+      # chassis origin (bumper at +0.494, tail at -0.496).
+      footprint: "[[0.494, 0.335], [0.494, -0.335], [-0.496, -0.335], [-0.496, 0.335]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -149,7 +169,22 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.30
+        # Must be >= the footprint's inscribed radius, which Nav2 computes
+        # as 0.345 for this rectangle; below that it refuses to mark the
+        # inscribed band and logs "smaller than the computed inscribed
+        # radius ... to avoid collisions". 0.22 (carried over from the old
+        # 0.25 m circle) did exactly that and left the robot unable to get
+        # itself through the lab doorway at all.
+        # Just above the 0.345 m inscribed radius Nav2 computes for the
+        # footprint - the minimum it will accept. Anything much larger
+        # squeezes the cost-0 lane through the 1.5 m doorways down to a
+        # few cells, and NavFn then computes a legal potential but fails
+        # to extract a path from it ("Failed to create a plan from
+        # potential when a legal potential was found"), which is what 0.45
+        # did. Hugging obstacles more closely is acceptable here because
+        # the footprint is now the true rectangle, so the inscribed band
+        # it leaves is real clearance rather than an under-estimate.
+        inflation_radius: 0.36
       always_send_full_costmap: true
 
 global_costmap:
@@ -160,7 +195,11 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.25
+      # The A200 is 0.99 m long x 0.67 m wide. A circle cannot describe that
+      # without either cutting the corners off or wasting a third of the
+      # corridor, so the footprint is the actual rectangle, base_link at the
+      # chassis origin (bumper at +0.494, tail at -0.496).
+      footprint: "[[0.494, 0.335], [0.494, -0.335], [-0.496, -0.335], [-0.496, 0.335]]"
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -184,7 +223,22 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.30
+        # Must be >= the footprint's inscribed radius, which Nav2 computes
+        # as 0.345 for this rectangle; below that it refuses to mark the
+        # inscribed band and logs "smaller than the computed inscribed
+        # radius ... to avoid collisions". 0.22 (carried over from the old
+        # 0.25 m circle) did exactly that and left the robot unable to get
+        # itself through the lab doorway at all.
+        # Just above the 0.345 m inscribed radius Nav2 computes for the
+        # footprint - the minimum it will accept. Anything much larger
+        # squeezes the cost-0 lane through the 1.5 m doorways down to a
+        # few cells, and NavFn then computes a legal potential but fails
+        # to extract a path from it ("Failed to create a plan from
+        # potential when a legal potential was found"), which is what 0.45
+        # did. Hugging obstacles more closely is acceptable here because
+        # the footprint is now the true rectangle, so the inscribed band
+        # it leaves is real clearance rather than an under-estimate.
+        inflation_radius: 0.36
       always_send_full_costmap: true
 
 planner_server:
