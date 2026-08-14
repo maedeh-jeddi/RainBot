@@ -127,7 +127,13 @@
     <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
       <parameters>$(find pickplace_arm_description)/config/arm_controllers.yaml</parameters>
       <ros>
-        <remapping>~/robot_description:=/robot_description</remapping>
+        <!-- Emitted only when robot_ns is set. An empty <namespace/> is not the
+             same as no namespace to the plugin, so the single-robot SDF has to
+             come out with this element absent, exactly as before. -->
+        <xacro:if value="${robot_ns != ''}">
+          <namespace>${robot_ns}</namespace>
+        </xacro:if>
+        <remapping>~/robot_description:=${ns_topic}/robot_description</remapping>
       </ros>
     </plugin>
   </gazebo>
@@ -166,9 +172,9 @@
         <parent_link>fr3_link7</parent_link>
         <child_model>${model}</child_model>
         <child_link>link</child_link>
-        <attach_topic>/${model}/attach</attach_topic>
-        <detach_topic>/${model}/detach</detach_topic>
-        <output_topic>/${model}/attach_state</output_topic>
+        <attach_topic>${ns_topic}/${model}/attach</attach_topic>
+        <detach_topic>${ns_topic}/${model}/detach</detach_topic>
+        <output_topic>${ns_topic}/${model}/attach_state</output_topic>
         <suppress_child_warning>true</suppress_child_warning>
       </plugin>
     </gazebo>
@@ -241,7 +247,7 @@
        carries a sensor. -->
   <gazebo reference="camera_link">
     <sensor name="rgbd_camera" type="rgbd_camera">
-      <topic>/camera</topic>
+      <topic>${ns_topic}/camera</topic>
       <!-- 5 Hz, down from 30. RGB-D rendering is BY FAR the most expensive
            thing in this simulation: two 640x480 rgbd_camera sensors at 30 Hz
            held the real-time factor at 0.28 with the Gazebo GUI up (measured
@@ -290,14 +296,14 @@
                z  -0.24 .. +4.28   (floor, 0.22 below the lens, up to ceiling)
            i.e. unambiguously X-forward. See the front camera below for the
            same fix and the reason nothing else changes. -->
-      <gz_frame_id>camera_link</gz_frame_id>
+      <gz_frame_id>${ns_frame}camera_link</gz_frame_id>
     </sensor>
   </gazebo>
 
   <!-- 2D LIDAR sensor (Gazebo Harmonic gpu_lidar) for SLAM + Nav2 -->
   <gazebo reference="lidar_link">
     <sensor name="lidar" type="gpu_lidar">
-      <topic>/scan</topic>
+      <topic>${ns_topic}/scan</topic>
       <update_rate>10</update_rate>
       <always_on>1</always_on>
       <visualize>true</visualize>
@@ -327,7 +333,7 @@
           <stddev>0.01</stddev>
         </noise>
       </lidar>
-      <gz_frame_id>lidar_link</gz_frame_id>
+      <gz_frame_id>${ns_frame}lidar_link</gz_frame_id>
     </sensor>
   </gazebo>
 
@@ -335,17 +341,17 @@
        odometry by the robot_localization EKF to keep heading accurate. -->
   <gazebo reference="imu_link">
     <sensor name="imu" type="imu">
-      <topic>/imu</topic>
+      <topic>${ns_topic}/imu</topic>
       <update_rate>50</update_rate>
       <always_on>1</always_on>
-      <gz_frame_id>imu_link</gz_frame_id>
+      <gz_frame_id>${ns_frame}imu_link</gz_frame_id>
     </sensor>
   </gazebo>
 
   <!-- Front RGB-D camera: detects the box ahead while the base drives. -->
   <gazebo reference="front_camera_link">
     <sensor name="front_rgbd_camera" type="rgbd_camera">
-      <topic>/front_camera</topic>
+      <topic>${ns_topic}/front_camera</topic>
       <!-- 15 Hz, down from 30 - see the wrist camera above for the measured
            cost. This one carries the whole mission (box pick AND column
            placement), so it keeps roughly 2x the margin it needs rather than
@@ -396,7 +402,7 @@
            transform, it is the correct ROS optical frame should anything ever
            need one (depth_image_proc and friends assume that convention), and
            removing it would break nothing but document nothing either. -->
-      <gz_frame_id>front_camera_link</gz_frame_id>
+      <gz_frame_id>${ns_frame}front_camera_link</gz_frame_id>
     </sensor>
   </gazebo>
 

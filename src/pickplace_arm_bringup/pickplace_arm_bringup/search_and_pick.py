@@ -94,7 +94,7 @@ class SearchAndPick(PickAndPlace):
     def __init__(self):
         super().__init__()
         self.cmd_vel_pub = self.create_publisher(
-            Twist, '/diff_drive_controller/cmd_vel_unstamped', 10)
+            Twist, 'diff_drive_controller/cmd_vel_unstamped', 10)
         # run() re-detects for the grasp with the steeper grasp-scan pose,
         # whose [0.40,0.70]m band covers the ~0.43m stop distance (the search
         # pose's floor is ~0.45m, and the default steep pose only sees to

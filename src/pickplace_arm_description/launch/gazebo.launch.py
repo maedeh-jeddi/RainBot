@@ -66,6 +66,10 @@ def generate_launch_description():
     # SPAWN_X/SPAWN_Y let a different world pick a clear spot to spawn into.
     spawn_x = os.environ.get('SPAWN_X', '0.0')
     spawn_y = os.environ.get('SPAWN_Y', '0.0')
+    # Seconds to wait AFTER the server is ready before inserting the robot, so
+    # the GUI has finished building its scene. Default 0: a small world needs
+    # none. See the gate below for why this is a delay and not a condition.
+    spawn_delay = os.environ.get('SPAWN_DELAY', '0')
 
     robot_description = {
         'robot_description': ParameterValue(
@@ -131,6 +135,22 @@ def generate_launch_description():
     # This is the same reasoning as the mission launch's readiness gates - wait
     # for the condition, not for a guessed number of seconds.
     #
+    # THE GUI NEEDS ITS OWN GATE, AND THERE IS NO CONDITION TO WAIT ON. That
+    # service gate is server readiness only. The GUI builds its scene
+    # separately and far more slowly, because it also has to upload every mesh
+    # and texture to the renderer, and a model inserted while it is still
+    # streaming is DROPPED: it lands in the ECM, physics and the sensors see it,
+    # `gz model --list` reports it - and it is simply never drawn. In
+    # aws_hospital that is exactly what happened to the robot. It spawned at
+    # +6.5 s, the GUI was still loading, and the viewport showed an empty lobby
+    # while /scan ran at 10 Hz and the robot's own camera rendered the scene
+    # normally. Inserting the identical URDF by hand minutes later, into the
+    # settled scene, draws it correctly - that is what pins the cause on timing.
+    #
+    # Gazebo exposes no "GUI scene loaded" signal to wait for, so this is a
+    # measured delay rather than a condition, and it is opt-in per world via
+    # SPAWN_DELAY so tugbot_warehouse and hospital_lab keep spawning instantly.
+    #
     # base_link (the root) is the Husky A200's chassis origin, which sits
     # (wheel_radius - wheel_vertical_offset) = 0.1651 - 0.03282 = 0.13228 m
     # above the ground so the wheels touch the floor; base_footprint hangs
@@ -140,6 +160,7 @@ def generate_launch_description():
         cmd=['bash', '-c',
              f'until gz service -l 2>/dev/null | '
              f'grep -q "^/world/{world_entity_name}/create$"; do sleep 2; done; '
+             f'sleep {spawn_delay}; '
              f'exec ros2 run ros_gz_sim create '
              f'-world {world_entity_name} '
              f'-topic /robot_description -name pickplace_arm '

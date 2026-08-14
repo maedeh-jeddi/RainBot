@@ -225,6 +225,12 @@ class Mission2(Mission):
     # as the payload is not a cube: the sample rack is grasped by a block on a
     # gantry 0.17 m above its tray, so a placement computed as BOX_SIZE / 2.0
     # would drive the rack 0.14 m THROUGH the shelf it was meant to stand on.
+    # Leave the table by navigating back to LAYOUT_TABLE_APPROACH rather than
+    # reversing blind. Off by default: the warehouse and hospital_lab picks
+    # happen in open rooms where a blind reverse has nothing to hit, and their
+    # behaviour should not change. See the back-off in run_mission_2.
+    BACK_OFF_VIA_NAV = False
+
     PAYLOAD_GRIP_HEIGHT = BOX_SIZE / 2.0
     # Where the grasped feature reads (base_link z) with the payload sitting on
     # the FLOOR. _placement_landed compares against this to tell "on the target"
@@ -258,7 +264,7 @@ class Mission2(Mission):
     def __init__(self):
         super().__init__()
         self._set_params_client = self.create_client(
-            SetParameters, '/controller_server/set_parameters')
+            SetParameters, 'controller_server/set_parameters')
         self.get_logger().info('Mission 2 node ready')
 
     # --- Nav2 tuning ----------------------------------------------------------
@@ -306,7 +312,8 @@ class Mission2(Mission):
         publishing (see _creep_forward). Callers must tolerate None."""
         try:
             tf = self.tf_buffer.lookup_transform(
-                'odom', 'base_link', rclpy.time.Time(),
+                self.tf_frame('odom'), self.tf_frame('base_link'),
+                rclpy.time.Time(),
                 timeout=RclDuration(seconds=timeout_sec))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
@@ -665,11 +672,37 @@ class Mission2(Mission):
                 log.error(f'Failed to pick the {color} box -- aborting.')
                 return
 
-            # back straight off the table so Nav2 can turn/plan without the table
-            # (right in front of the robot) tripping its collision check.
-            log.info('[mission2] backing off the table')
-            self._drive_blind(-0.18, 3.5)
-            self._stop_base()
+            # Get clear of the table so Nav2 can turn and plan without the
+            # bench, right in front of the robot, tripping its collision check.
+            #
+            # TWO WAYS TO DO THAT, AND THE BLIND ONE IS ONLY SAFE IN AN OPEN
+            # ROOM. _drive_blind reverses along whatever heading the robot
+            # happens to hold, with no costmap and no look behind. After the
+            # visual servo and the grasp that heading is NOT the approach
+            # heading any more - measured 55 degrees off it on the AWS hospital
+            # collect - so 0.63 m of blind reverse goes somewhere nobody
+            # checked. There it drove the chassis onto the bench's own transfer
+            # shelf, which stands 0.30 m off the floor against a 0.165 m wheel:
+            # the robot ended up 36 degrees nose-up, 0.15 m in the air, in a
+            # cell with less clearance than its own footprint. Nav2 then had no
+            # valid start pose and aborted every goal for the rest of the run.
+            #
+            # Navigating back to the approach pose instead costs one Nav2 goal
+            # and uses the costmap. That pose is already known good: it is the
+            # one the robot drove to, and it is checked for back-off room when
+            # it is chosen (see hospital_aws_layout).
+            if self.BACK_OFF_VIA_NAV:
+                log.info('[mission2] navigating back to the approach pose')
+                if not self.navigate_to(
+                        self.make_map_goal(*self.LAYOUT_TABLE_APPROACH)):
+                    log.warning('[mission2] could not get back to the approach '
+                                'pose -- falling back to a blind reverse')
+                    self._drive_blind(-0.18, 3.5)
+                    self._stop_base()
+            else:
+                log.info('[mission2] backing off the table')
+                self._drive_blind(-0.18, 3.5)
+                self._stop_base()
 
             # 2) drive to a standoff in front of the column (facing it, yaw=pi
             # since the robot approaches from the +x table side), then visually

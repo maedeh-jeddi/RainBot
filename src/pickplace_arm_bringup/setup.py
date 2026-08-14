@@ -41,10 +41,19 @@ setup(
             # sequence relocated, so mission_hospital.py is layout plus payload
             # geometry, not a second implementation.
             'mission_hospital = pickplace_arm_bringup.mission_hospital:main',
+            # The same run relocated into the big AWS hospital, and the
+            # straight-line version of the two-robot relay: every part of it
+            # except the handover is shared with that.
+            'mission_hospital_aws = '
+            'pickplace_arm_bringup.mission_hospital_aws:main',
             # Walks the hospital corridor's pedestrians up and down their lanes
             # so they are moving obstacles rather than scenery.
             'corridor_pedestrians = '
             'pickplace_arm_bringup.corridor_pedestrians:main',
+            # Rebuilds maps/aws_hospital.* straight from the world file. Run it
+            # whenever aws_hospital.sdf changes; there is no drive to redo.
+            'aws_hospital_map = '
+            'pickplace_arm_bringup.aws_hospital_map:main',
             # Manual driving, used when building a map with mapping.launch.py.
             'teleop_key = pickplace_arm_bringup.teleop_key:main',
             # Automated replacement for teleop_key when mapping the hospital

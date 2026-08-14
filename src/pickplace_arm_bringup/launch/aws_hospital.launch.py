@@ -14,9 +14,23 @@ def generate_launch_description():
     mission is not wired to this building yet.
 
     SPAWN POSE. The world origin is INSIDE A WALL - spawning there embeds the
-    robot in it. (0, 7.5) is the middle of the lobby and is the roomiest spot in
-    the building: 7.29 m to the nearest wall, measured off the wall collision
-    mesh rather than judged by eye.
+    robot in it. (-3.25, 8.5) is in the lobby, north-west of the nurses' station,
+    and is the best-balanced clear spot in the building:
+
+        4.37 m to the nearest wall      (wall collision mesh)
+        3.06 m to the nurses' station   (its collision mesh, not its origin)
+        3.20 m to the nearest prop      (include poses)
+        2.50 m to the nearest actor path (waypoint-to-waypoint segments)
+
+    IT USED TO BE (0, 7.5), CHOSEN ON WALL CLEARANCE ALONE - 7.29 m, the roomiest
+    spot in the building by that one measure. Then lobby_planter went into the
+    world at (0, 7.75). The planter's pot collision has a 0.36 m radius and the
+    spawn point sits 0.235 m from its centre, so the robot spawned INSIDE it: it
+    climbed the saucer, ended up at z = 0.179 instead of the 0.14 it was given,
+    and sat with a 0.069 rad (3.9 deg) roll. A tilted spawn is not cosmetic - the
+    IMU and the LIDAR plane start off level.
+    Measure a spawn point against the furniture and the actor paths, not just the
+    walls.
 
     THE BUILDING, measured the same way: 27 x 58 m overall, of which 831 m2 is
     floor the Husky actually fits on and can reach from the lobby, with routes
@@ -51,7 +65,12 @@ def generate_launch_description():
     # jammed against a wall and stopped: a trajectory cannot jam.
     return LaunchDescription([
         SetEnvironmentVariable('WORLD', 'aws_hospital.sdf'),
-        SetEnvironmentVariable('SPAWN_X', '0.0'),
-        SetEnvironmentVariable('SPAWN_Y', '7.5'),
+        SetEnvironmentVariable('SPAWN_X', '-3.25'),
+        SetEnvironmentVariable('SPAWN_Y', '8.5'),
+        # 182 models' worth of meshes take the GUI well past the point where the
+        # server is ready to accept the robot, and a model inserted before the
+        # GUI's scene is built never gets drawn - see gazebo.launch.py's spawn
+        # gate. Hold the insert until the viewport has settled.
+        SetEnvironmentVariable('SPAWN_DELAY', '45'),
         gazebo,
     ])

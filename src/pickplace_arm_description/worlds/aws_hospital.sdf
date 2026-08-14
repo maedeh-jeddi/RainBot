@@ -1069,14 +1069,12 @@
       <pose>-9.74 -28.65 0 0 0 -1.5708</pose>
     </include>
 
-    <!-- A planter in the middle of the lobby. Local model, built from
-         primitives - see models/lobby_planter for why nothing on Fuel
-         fitted. It has collision, so the LIDAR and Nav2 see it. -->
-    <include>
-      <uri>model://lobby_planter</uri>
-      <name>lobby_planter</name>
-      <pose>0.00 7.75 0 0 0 0</pose>
-    </include>
+    <!-- The lobby planter used to stand here, at (0, 7.75). It came out to
+         clear the middle of the lobby for the robot fleet, which parks in a
+         ring around that point facing inward - see ROBOTS in
+         pickplace_arm_bringup/launch/aws_hospital_fleet.launch.py. The model
+         itself is still in models/lobby_planter; putting it back is one
+         include, and the spawn ring would have to move if you do. -->
 
     <!-- Two "quiet please" posters, one on each side wall of the lobby, in the
          gaps between the AWS portraits already hanging there. The x/y is the

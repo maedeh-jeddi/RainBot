@@ -70,7 +70,7 @@ class NavAndPick(SearchAndPick):
         # controller directly. Navigation (Nav2) and this node's spin/visual
         # servo run in separate, non-overlapping phases, so they can share that
         # topic without a twist_mux arbitrating between them.
-        self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
+        self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self.get_logger().info('Nav-and-pick node ready')
 
     # --- scan one full revolution in place, return the box if seen ----------
@@ -115,7 +115,7 @@ class NavAndPick(SearchAndPick):
     def box_in_map(self, bx, by):
         try:
             tf = self.tf_buffer.lookup_transform(
-                'map', 'base_link', rclpy.time.Time(),
+                'map', self.tf_frame('base_link'), rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=2.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
@@ -130,7 +130,7 @@ class NavAndPick(SearchAndPick):
     def robot_in_map(self):
         try:
             tf = self.tf_buffer.lookup_transform(
-                'map', 'base_link', rclpy.time.Time(),
+                'map', self.tf_frame('base_link'), rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=2.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
@@ -158,12 +158,23 @@ class NavAndPick(SearchAndPick):
         return self.make_map_goal(bx - APPROACH_DIST * ux,
                                   by - APPROACH_DIST * uy, math.atan2(uy, ux))
 
-    def navigate_to(self, goal_pose, timeout_sec=NAV_TIMEOUT_SEC, retries=2):
+    # Per-mission override of NAV_TIMEOUT_SEC. A class attribute rather than a
+    # module constant because how long a drive legitimately takes is a property
+    # of the BUILDING, not of the code: hospital_lab's longest leg is about 20 m
+    # and 120 s is generous there, while the AWS hospital's collect run is a
+    # ~45 m route through the west corridor and times out at 120 s having done
+    # nothing wrong. Raising the module constant instead would have made every
+    # mission wait four times as long to notice a genuinely stuck robot.
+    NAV_TIMEOUT_SEC = NAV_TIMEOUT_SEC
+
+    def navigate_to(self, goal_pose, timeout_sec=None, retries=2):
         """Send a NavigateToPose goal and wait for it to actually SUCCEED.
         A goal that ABORTs (e.g. the Nav2 race right after canceling a patrol,
         or a transient plan failure) is retried after a short settle -- treating
         such a completion as 'arrived' would hand off to the visual servo from
         the wrong place."""
+        if timeout_sec is None:
+            timeout_sec = self.NAV_TIMEOUT_SEC
         log = self.get_logger()
         # Be patient discovering the action server: under heavy sim-startup load
         # DDS discovery of bt_navigator can take well over 10 s.

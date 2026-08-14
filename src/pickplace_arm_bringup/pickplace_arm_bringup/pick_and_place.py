@@ -161,6 +161,33 @@ MAX_GRASP_ATTEMPTS = 3
 # Seeded IK from the post-lift state reaches it in one smooth step (0.81 rad,
 # no branch flip), so the strict carry move has a same-branch solution.
 CARRY_POSITION = (0.50, 0.00, GROUND_Z + 0.65)
+# The two numbers the height above was derived from, named so carry_position()
+# can re-derive it for a payload that is not a box.
+LIDAR_SCAN_Z = 0.4466            # laser centre above the floor
+CARRY_LIDAR_CLEARANCE = 0.17     # payload underside to scan plane
+
+
+def carry_height(payload_grip_height):
+    """Fingertip height above the floor that keeps `payload` out of the scan.
+
+    THE 0.65 ABOVE IS CORRECT FOR A BOX AND WRONG FOR ANYTHING HELD HIGHER UP
+    ITS OWN BODY. It was derived as scan plane + clearance + half a box:
+    0.4466 + 0.17 + 0.03. A box is grasped through its middle, so its underside
+    hangs 0.03 m below the fingertips. The sample rack is grasped by a block on
+    a gantry 0.17 m above its own tray, so at the same fingertip height its
+    underside rides 0.14 m LOWER - 0.033 m above the scan plane instead of
+    0.17 m.
+
+    That is not a near miss, it is a hit. Carrying the rack, the forward arc of
+    the LIDAR came back with all 31 beams under 0.6 m, median 0.13 m, minimum
+    exactly range_min: the robot was looking at its own payload. Every costmap
+    then had a wall immediately ahead, every plan through it was invalid, and
+    Nav2 aborted every goal after the pick while the identical drive before the
+    pick had worked perfectly.
+
+    Never lower than the tuned 0.65, so a box-carrying mission is unchanged.
+    """
+    return max(0.65, LIDAR_SCAN_Z + CARRY_LIDAR_CLEARANCE + payload_grip_height)
 
 # Neutral / "ready" claw configuration (joint angles j1..j7): the gripper points
 # STRAIGHT DOWN with the fingertips at (GRIPPER_X, 0, 0.50 above the floor).
@@ -195,6 +222,26 @@ HOME_CONFIG = [0.0, 0.5012, 0.0, -1.9509, 0.0, 2.452, 0.7854]
 GRIPPER_X = 0.70
 GRIPPER_Y = 0.0
 READY_Z = GROUND_Z + 0.50
+# Minimum height the payload must GAIN before anything moves it sideways.
+#
+# READY_Z above is an absolute height and says nothing about what is being
+# carried, which is fine for a box grasped through its middle - lifting to 0.50
+# raises a ground box by a comfortable margin. It is not fine for a payload
+# grasped high up its own body: the sample rack is held by a block 0.17 m above
+# its tray, so a grasp at 0.338 lifts to 0.368 and the tray rises just 0.030 m
+# off the shelf it was standing on. The very next move is the carry pose, which
+# sweeps it 0.35 m horizontally at that height.
+#
+# Traced live: weld at -3 s, lift at -2 s, carry at -1 s, and in that step the
+# whole ROBOT went 0.07 m into the air and 15.8 degrees over while moving only
+# 0.046 m horizontally. That is not the chassis climbing anything - it is the
+# solver resolving a rigid weld against a payload still in contact with the
+# shelf by pushing the robot away from it.
+LIFT_CLEARANCE = 0.12
+# How far the payload is raised on FRICTION ALONE before the weld is created,
+# purely to break contact with whatever it was standing on. See the weld in the
+# claw grab for why the order matters.
+WELD_CLEARANCE = 0.06
 # Reach check, from the URDF: fr3_link0 sits 0.3837 m above the floor, so at
 # the FR3's full 0.855 m reach the floor is reachable out to a 0.7641 m
 # horizontal radius about the arm base - x <= 0.844 in base_link, i.e. 0.35 m
@@ -293,6 +340,27 @@ class PickAndPlace(Node):
         super().__init__('pick_and_place')
         cbg = ReentrantCallbackGroup()
 
+        # TWO DIFFERENT `base_link`s LIVE IN THIS CLASS, AND THEY MUST NOT BE
+        # CONFLATED.
+        #
+        # The TF tree is per-robot: robot_state_publisher stamps every frame
+        # with the robot's namespace, so on r1 the LIDAR is r1/lidar_link and
+        # the chassis is r1/base_link. Anything that goes to tf_buffer therefore
+        # has to be prefixed, which is what tf_frame() below is for.
+        #
+        # MoveIt's model is NOT prefixed. move_group is launched into the
+        # robot's namespace with the same unprefixed URDF, so its links are
+        # plain `base_link`, `fr3_link7` and so on - and nothing outside that
+        # node ever sees them. Frame names handed to MoveIt (base_link_name
+        # here, the frame_id on a collision object, a pose goal) must stay
+        # BARE. Prefixing them makes MoveIt reject a link its model has never
+        # heard of.
+        #
+        # Rule of thumb: prefix it if tf2 will resolve it, leave it bare if
+        # MoveIt will.
+        ns = self.get_namespace().strip('/')
+        self.tf_prefix = f'{ns}/' if ns else ''
+
         self.arm = MoveIt2(
             node=self, joint_names=ARM_JOINTS, base_link_name='base_link',
             end_effector_name=GRASP_LINK, group_name='arm', callback_group=cbg)
@@ -312,8 +380,15 @@ class PickAndPlace(Node):
         self.scan_position = SCAN_POSITION
         self.scan_pitch = SCAN_PITCH
 
+        # EVERY NAME IN THIS CLASS AND ITS SUBCLASSES IS RELATIVE, NOT ABSOLUTE.
+        # A leading slash pins a topic to the global namespace, which is right
+        # for one robot and wrong for a fleet: launched into /r1 this node then
+        # drives /gripper_controller while its own controllers listen on
+        # /r1/gripper_controller, and it fails by doing nothing rather than by
+        # raising. Relative names resolve to exactly the old topics when the
+        # node runs unnamespaced, so the single-robot missions are unchanged.
         self.gripper_pub = self.create_publisher(
-            JointTrajectory, '/gripper_controller/joint_trajectory', 10)
+            JointTrajectory, 'gripper_controller/joint_trajectory', 10)
 
         # --- perception: point cloud subscriptions + TF ---
         # Wrist (eye-in-hand) RGB-D for the precise grasp scan, and the
@@ -321,12 +396,12 @@ class PickAndPlace(Node):
         self._cloud_lock = Lock()
         self._latest_cloud = None
         self.create_subscription(
-            PointCloud2, '/camera/points', self._cloud_cb, 1,
+            PointCloud2, 'camera/points', self._cloud_cb, 1,
             callback_group=cbg)
         self._front_lock = Lock()
         self._front_cloud = None
         self.create_subscription(
-            PointCloud2, '/front_camera/points', self._front_cloud_cb, 1,
+            PointCloud2, 'front_camera/points', self._front_cloud_cb, 1,
             callback_group=cbg)
 
         # Latest joint positions -- used to VERIFY a grasp actually holds the
@@ -334,7 +409,7 @@ class PickAndPlace(Node):
         # nearest, simplest joint path (current arm config).
         self._joint_pos = {}
         self.create_subscription(
-            JointState, '/joint_states', self._joint_state_cb, 10,
+            JointState, 'joint_states', self._joint_state_cb, 10,
             callback_group=cbg)
 
         self.tf_buffer = tf2_ros.Buffer()
@@ -346,8 +421,8 @@ class PickAndPlace(Node):
         # Tugbot-warehouse run. These publish through the ros_gz bridge.
         self._attach_pubs, self._detach_pubs = {}, {}
         for c, model in self.GRASP_MODELS.items():
-            self._attach_pubs[c] = self.create_publisher(Empty, f'/{model}/attach', 10)
-            self._detach_pubs[c] = self.create_publisher(Empty, f'/{model}/detach', 10)
+            self._attach_pubs[c] = self.create_publisher(Empty, f'{model}/attach', 10)
+            self._detach_pubs[c] = self.create_publisher(Empty, f'{model}/detach', 10)
         self._attached_color = None
         # The plugins weld each box the moment it spawns -- metres away, with
         # the robot about to drive off and drag it. Break those welds before
@@ -372,6 +447,16 @@ class PickAndPlace(Node):
             time.sleep(0.05)
 
     def attach_box(self, color):
+        # DIAGNOSTIC ESCAPE HATCH. Set NO_WELD=1 to run the whole pick with the
+        # DetachableJoint never created, which isolates "the arm's motion tips
+        # the base" from "the weld fighting the rack's contact with the shelf".
+        # Not a mode anyone should run a mission in - without the weld the
+        # payload is held by friction alone and will be dropped.
+        import os as _os
+        if _os.environ.get('NO_WELD') == '1':
+            self.get_logger().warn('[attach] SKIPPED (NO_WELD=1, diagnostic)')
+            return
+
         """Weld the `color` box to the gripper. Call ONLY after the finger-gap
         check confirms the box is really between the jaws -- the joint is
         created at the current relative pose, so attaching without a real grasp
@@ -585,6 +670,16 @@ class PickAndPlace(Node):
         if release:
             self.detach_box(log_label=f'on gripper open ({label})')
 
+    def tf_frame(self, name):
+        """A TF frame name for THIS robot.
+
+        `map` is deliberately excluded: it is the one frame the whole fleet
+        shares, and it is what makes one robot's pose comparable with another's.
+        Everything else - odom, base_link, the sensor frames - belongs to a
+        single robot and carries its namespace.
+        """
+        return name if name == 'map' else self.tf_prefix + name
+
     def add_box(self, xy, z_center=None):
         if z_center is None:
             z_center = GROUND_Z + BOX_SIZE / 2.0  # ground box in base_link frame
@@ -626,9 +721,9 @@ class PickAndPlace(Node):
         lets the colour servo lock onto the target instead of the walls."""
         log = self.get_logger()
         if source == 'front':
-            lock, cloud_frame = self._front_lock, 'front_camera_link'
+            lock, cloud_frame = self._front_lock, self.tf_frame('front_camera_link')
         else:
-            lock, cloud_frame = self._cloud_lock, 'camera_link'
+            lock, cloud_frame = self._cloud_lock, self.tf_frame('camera_link')
         with lock:
             if source == 'front':
                 self._front_cloud = None
@@ -717,11 +812,12 @@ class PickAndPlace(Node):
         point.point.x, point.point.y, point.point.z = cx, cy, cz
         try:
             tf = self.tf_buffer.lookup_transform(
-                'base_link', cloud_frame, rclpy.time.Time(),
+                self.tf_frame('base_link'), cloud_frame, rclpy.time.Time(),
                 timeout=RclDuration(seconds=1.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
-            log.error(f'[detect] TF lookup base_link <- {cloud_frame} failed: {e}')
+            log.error(f"[detect] TF lookup {self.tf_frame('base_link')} <- "
+                      f'{cloud_frame} failed: {e}')
             return None
         point_base = tf2_geometry_msgs.do_transform_point(point, tf)
         bx, by, bz = point_base.point.x, point_base.point.y, point_base.point.z
@@ -806,7 +902,8 @@ class PickAndPlace(Node):
             #    plan rather than cartesian; slow keeps the friction-held box
             #    from being jerked loose.
             self.move_pose(bx, by, APPROACH_Z, 0.0, cartesian=True, label='lift')
-            cx, cy, cz = CARRY_POSITION
+            cx, cy, _ = CARRY_POSITION
+            cz = GROUND_Z + carry_height(self.PAYLOAD_GRIP_HEIGHT)
             # strict: never fall back to an unseeded pose plan while holding
             # the box (see _move_pose_direct) -- it can pick a wildly
             # different joint solution and swing the arm around.
@@ -871,28 +968,70 @@ class PickAndPlace(Node):
                            label='claw lift-empty', quat_xyzw=zdown_quat(0.0))
             return False
         log.info('[claw] box held between the jaws')
-        # The grasp is verified, so make it rigid before any lifting or driving
-        # happens -- everything below this point (lift, carry pose, then a
-        # multi-metre Nav2 drive to the column) is where the friction hold used
-        # to lose the box.
-        self.attach_box(color)
 
-        # attach so MoveIt carries it + RViz shows it, lift straight up, carry.
-        # The grasp frame is now fr3_hand_tcp, which sits BETWEEN the jaws - so
-        # the held box's centre is at the grasp z itself, not 0.0575 m below it
-        # as it was when poses were commanded for the gripper BODY.
+        # BREAK CONTACT WITH THE SURFACE BEFORE WELDING, NOT AFTER.
+        #
+        # The weld makes the payload part of the robot's own rigid body. Create
+        # it while the payload is still resting on something and the solver has
+        # to resolve that contact against the whole robot: the reaction pitches
+        # the chassis forward onto its front wheels. Measured on the AWS
+        # hospital collect - 23 to 36 degrees nose-down, the rear wheels off the
+        # ground, and base_link rising exactly 0.256*sin(pitch) as it pivoted
+        # about the front axle. From there Nav2 had no valid start pose and
+        # aborted every remaining goal.
+        #
+        # It took an A/B run to pin down, because four other explanations fitted
+        # the symptom: the same pick with the weld skipped entirely tilted 0.0
+        # degrees across 33 samples, same arm motion, same route, same poses.
+        # Not the shelf, not the stop distance, not the centre of mass, not the
+        # payload's 0.30 kg.
+        #
+        # So lift clear on friction first. WELD_CLEARANCE is deliberately small:
+        # long enough to break contact, short enough that a friction-only hold
+        # is not being asked to survive a real carry - which it cannot, as the
+        # same diagnostic run showed ("box slipped during lift/carry").
+        self.move_pose(bx, by, grasp_z + WELD_CLEARANCE, 0.0, cartesian=True,
+                       label='break contact', quat_xyzw=zdown_quat(0.0))
+        # THE WELD IS CREATED AT THE CARRY POSE, NOT HERE. Creating the
+        # DetachableJoint adds a link to an already-articulated body mid-run,
+        # and the solver's transient is applied wherever the gripper happens to
+        # be. At the grasp that is 0.85 m ahead of base_link - the longest lever
+        # the arm has - and it pitched the chassis 22 to 36 degrees onto its
+        # front wheels, every time. Doing it at the carry pose puts the same
+        # transient at 0.50 m, about 40 percent less moment.
+        #
+        # The cost is that the payload rides on FRICTION ALONE through the lift
+        # and the carry move. That is a real risk, not a theoretical one: the
+        # diagnostic run with the weld skipped entirely reported "box slipped
+        # during lift/carry". If this slips, the answer is not to move the weld
+        # back but to make the un-welded window shorter or slower.
+
+        # MoveIt bookkeeping stays here so the planner knows it is carrying
+        # something for the lift and carry moves themselves. The grasp frame is
+        # fr3_hand_tcp, which sits BETWEEN the jaws - so the held box's centre
+        # is at the grasp z itself, not 0.0575 m below it as it was when poses
+        # were commanded for the gripper BODY.
         self.add_box((bx, by), z_center=grasp_z)
         self.arm.attach_collision_object(
             id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
         time.sleep(0.5)
-        self.move_pose(bx, by, READY_Z, 0.0, cartesian=True,
+        # Straight up by at least LIFT_CLEARANCE above the grasp, so the
+        # payload is unambiguously off its surface before the carry move takes
+        # it sideways. max() keeps the box picks at exactly the old READY_Z.
+        lift_z = max(READY_Z, grasp_z + LIFT_CLEARANCE)
+        self.move_pose(bx, by, lift_z, 0.0, cartesian=True,
                        label='claw lift', quat_xyzw=zdown_quat(0.0))
-        cx, cy, cz = CARRY_POSITION
+        cx, cy, _ = CARRY_POSITION
+        cz = GROUND_Z + carry_height(self.PAYLOAD_GRIP_HEIGHT)
         # strict: never fall back to an unseeded pose plan while holding the
         # box -- that fallback picks ANY IK solution, including ones that
         # swing the joints all the way around, which can shake the box loose.
-        if not self.move_pose(cx, cy, cz, 0.0, cartesian=False, label='carry',
-                              strict=True):
+        carry_ok = self.move_pose(cx, cy, cz, 0.0, cartesian=False,
+                                  label='carry', strict=True)
+        if carry_ok:
+            # Now weld, with the payload tucked over the base.
+            self.attach_box(color)
+        if not carry_ok:
             log.warn('[claw] carry move failed -- releasing so the retry '
                      'starts from a clean, empty-gripper state')
             self.arm.detach_collision_object(BOX_ID)
