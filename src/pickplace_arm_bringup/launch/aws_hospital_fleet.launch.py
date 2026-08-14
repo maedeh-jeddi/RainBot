@@ -103,6 +103,15 @@ SPAWN_STAGGER = 12
 # tries to configure them, and seconds between one robot's stack and the next.
 LIFECYCLE_SETTLE = 15
 NAV_STAGGER = 25
+# EVERY ROBOT WAITS, INCLUDING THE FIRST. The stagger alone was idx * NAV_STAGGER,
+# which gives robot zero no delay at all - and robot zero was the one that kept
+# failing while its staggered siblings came up clean. Observed directly: r2
+# reached "Managed nodes are active" while r1 sat on "Configuring
+# controller_server", with the machine only lightly loaded, so this is ordering
+# and not starvation. r1's controllers finish first, so its Nav2 bring-up starts
+# while r3 and r4 are still being inserted into Gazebo and claiming controllers
+# of their own. NAV_SETTLE pushes the first stack past the last spawn.
+NAV_SETTLE = 45
 NAV_NODES = ['controller_server', 'smoother_server', 'planner_server',
              'behavior_server', 'bt_navigator']
 
@@ -195,6 +204,29 @@ def generate_launch_description():
         ]
     bridge = Node(package='ros_gz_bridge', executable='parameter_bridge',
                   arguments=bridge_args, output='screen')
+
+    # GATE THE NAVIGATION STACKS ON A CONDITION, NOT ON A CLOCK.
+    #
+    # These used to start a fixed number of seconds after each robot's
+    # controllers came up, and the first robot in ROBOTS failed almost every
+    # time while its staggered siblings came up clean - r2 reaching "Managed
+    # nodes are active" while r1 sat on "Configuring amcl", or
+    # controller_server, or planner_server, a different node each run. The
+    # first stack is simply the one that lands while Gazebo is still inserting
+    # the other robots and handing out their controllers.
+    #
+    # Tuning the delay is a losing game: the world gate measured 63 s early in a
+    # session and 104 s hours later on the same machine, so any constant that
+    # works now is wrong later. The condition that actually matters is that the
+    # LAST robot's LAST controller is publishing - at which point every robot has
+    # spawned and every controller_manager has finished handing out controllers.
+    last_ns = ROBOTS[-1][0]
+    fleet_gate = Node(
+        package='pickplace_arm_bringup', executable='wait_for',
+        name='wait_for_fleet', output='screen', parameters=[sim],
+        arguments=['--label', 'fleet', '--timeout', '900',
+                   '--clock-stable', '0.5',
+                   '--topic', f'/{last_ns}/diff_drive_controller/odom'])
 
     actions = []
     for idx, (ns, x, y, yaw) in enumerate(ROBOTS):
@@ -349,9 +381,13 @@ def generate_launch_description():
                     output='screen',
                     parameters=[sim, {'autostart': True, 'bond_timeout': 0.0,
                                       'node_names': ['amcl'] + NAV_NODES}])]))
+            # Off the fleet gate rather than this robot's own spawner, so no
+            # stack starts until every robot is up. The per-robot stagger then
+            # keeps the two bring-ups from overlapping each other.
             actions.append(RegisterEventHandler(
-                OnProcessExit(target_action=diff, on_exit=[TimerAction(
-                    period=float(idx * NAV_STAGGER), actions=nav_actions)])))
+                OnProcessExit(target_action=fleet_gate, on_exit=[TimerAction(
+                    period=float(idx * NAV_STAGGER),
+                    actions=nav_actions)])))
 
         # MoveIt, one move_group per robot, so any of them can use its arm.
         #
@@ -400,5 +436,6 @@ def generate_launch_description():
         bridge,
         map_server,
         map_lifecycle,
+        fleet_gate,
         *actions,
     ])

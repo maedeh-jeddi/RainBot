@@ -85,11 +85,21 @@ def _walk(node, ns):
         # was the request, not the hardware - the robot was leaving a quarter of
         # its speed unused on routes 40 m long.
         #
-        # 0.70 is the smoother's cap, so nothing downstream clips it and the
-        # 0.8 m/s controller limit still has headroom. Fleet-only: the
-        # single-robot missions keep their tuned 0.55.
+        # Every cap in that chain is raised together, or the lowest one wins:
+        # 0.85 requested, 1.0 at the smoother, 1.0 at the diff drive controller
+        # (see diff_drive_frames). Fleet-only - the single-robot missions keep
+        # their tuned 0.55 and the shared 0.8 limit.
+        #
+        # WORTH KNOWING BEFORE RAISING IT FURTHER: this robot was already
+        # mislocalised by 1.44 m at the end of a 40 m run, and wheel odometry
+        # error grows with speed on a skid-steer. Faster driving is not free
+        # here; it trades against how well AMCL keeps up.
         if 'desired_linear_vel' in out:
-            out['desired_linear_vel'] = 0.70
+            out['desired_linear_vel'] = 0.85
+        # The velocity smoother caps whatever the controller asks for, so it has
+        # to come up too or 0.85 is clipped straight back to 0.70.
+        if 'max_velocity' in out and isinstance(out['max_velocity'], list):
+            out['max_velocity'] = [1.0, 0.0, 2.2]
         # AMCL MUST NOT POST-DATE ITS TRANSFORM BY MORE THAN THE REST OF THE
         # CHAIN CAN REACH.
         #
@@ -115,8 +125,14 @@ def _walk(node, ns):
         #
         # The costmap's own transform_tolerance does NOT fix this - that is a
         # lookup timeout, not a stamp-alignment problem.
+        #
+        # 0.5 rather than the 0.1 tried first: 0.1 is short enough that AMCL's
+        # transform can expire between its own updates while the robot is
+        # standing still, and it does NOT affect localisation accuracy either
+        # way - this parameter only says how far ahead AMCL stamps, not how well
+        # the particle filter tracks.
         if 'base_frame_id' in out and 'odom_frame_id' in out:
-            out['transform_tolerance'] = 0.1
+            out['transform_tolerance'] = 0.5
         return out
     if isinstance(node, list):
         return [_walk(v, ns) for v in node]
@@ -160,5 +176,10 @@ def diff_drive_frames(ns):
     with open(out, 'w') as fh:
         yaml.safe_dump({f'/{ns}/diff_drive_controller': {'ros__parameters': {
             'odom_frame_id': f'{ns}/odom',
-            'base_frame_id': f'{ns}/base_link'}}}, fh)
+            'base_frame_id': f'{ns}/base_link',
+            # The last cap in the chain. arm_controllers.yaml allows 0.8 m/s;
+            # raised here so the smoother's 1.0 is not clipped by the controller
+            # itself. Fleet-only, like the frames - the single-robot missions
+            # keep the shared file's 0.8.
+            'linear.x.max_velocity': 1.0}}}, fh)
     return out
