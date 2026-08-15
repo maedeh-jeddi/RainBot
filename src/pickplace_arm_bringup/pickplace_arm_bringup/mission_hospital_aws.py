@@ -45,11 +45,11 @@ from pickplace_arm_bringup.hospital_aws_layout import (  # noqa: E402
     HANDOVER_RECEIVER, RACK,
 )
 
-# The bench faces west, so the robot squares up 1.00 m WEST of the rack looking
-# east at it. Same 1.00 m standoff the warehouse and hospital_lab use:
+# The bench faces east, so the robot squares up 1.00 m EAST of the rack looking
+# west at it. Same 1.00 m standoff the warehouse and hospital_lab use:
 # claw_approach servos the last ~0.30 m in on the front camera, and closer than
 # this puts the Husky's bumper (base_link x = 0.4937) into the shelf.
-PICKUP_APPROACH = (RACK[0] - 1.00, RACK[1], 0.0)
+PICKUP_APPROACH = (RACK[0] + 1.00, RACK[1], math.pi)
 RACK_GRIP_HEIGHT = 0.170
 PICKUP_GRASP_Z = GROUND_Z + 0.30 + RACK_GRIP_HEIGHT
 
@@ -102,11 +102,12 @@ class MissionHospitalAws(Mission2):
     PAYLOAD_FLOOR_Z = GROUND_Z + RACK_GRIP_HEIGHT
     TARGET_COLOR = 'green'
     PLACE_VERIFY_COLOR = 'red'
-    # Approach the dock from the SOUTH (-y): the delivery bench is yawed a
-    # quarter turn so its shelf faces that way, and the corridor the robot
-    # arrives through is south of it. The warehouse's +x default would park the
-    # base behind the bench with the dock out of sight on the far side.
-    PLACE_APPROACH_DIR = (0.0, -1.0)
+    # Approach the dock from the NORTH (+y). The delivery bench now stands
+    # against the information desk at yaw -pi/2, which turns its shelf to face
+    # north into the lobby; the desk itself is immediately south of the bench,
+    # so the old (0, -1) approach would drive the robot at the counter and leave
+    # the dock out of sight on the far side of the carcass.
+    PLACE_APPROACH_DIR = (0.0, 1.0)
 
     # --- detection gates -----------------------------------------------------
     # Camera-frame (X-forward, Y-left, Z-up), relative to the lens at

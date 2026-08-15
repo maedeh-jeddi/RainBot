@@ -28,36 +28,51 @@ Poses are (x, y, yaw) in the world frame, which is also the map frame here.
 # So each standing pose is checked over the 2.0 x 1.4 m strip it backs out
 # through, and the figures below are the worst clearance anywhere in that strip.
 
-# --- pickup: bench in the south wing, shelf facing west -----------------------
+# --- pickup: bench placed by hand in the south wing, shelf facing east --------
 #
-# lab_bench's shelf protrudes in -x, so yaw 0 presents it to a robot arriving
-# from the west; the robot stands 1.53 m out at (-8.53, -26.50).
-#   stand clearance 1.20 m, and connected - see below for why that word matters
+# THIS POSE WAS CHOSEN IN THE GUI, NOT BY SEARCH. The user dragged the bench to
+# exactly here and asked for it to stay, so these numbers are read back off the
+# running world (/world/aws_hospital/pose/info) rather than computed. Do not
+# "improve" them - a clearance search will happily propose somewhere else, and
+# somewhere else is not the room that was asked for.
 #
-# A BENCH IS TESTED ON A MAP THAT ALREADY CONTAINS THAT BENCH. This one used to
-# stand at (8.50, -23.00), chosen against every measure in this file - wall
-# clearance, prop clearance, room to reverse - and every one of them passed.
-# It was still wrong, because all of them were computed on a map generated
-# BEFORE the bench existed. Adding the bench to the map sealed the mouth of the
-# bay it stands in: the robot's standing pose ended up in its own connected
-# component, 29 against the rest of the building's 4.
+# THE ROOM MATTERS, NOT JUST THE GEOMETRY. The bench used to sit at
+# (-7.00, -26.50), which is clear, reachable and completely wrong: that room is
+# the staff rest room. Blood samples are not collected there. The building has
+# meaning that no clearance metric can see, which is exactly why the placement
+# ended up being made by hand.
 #
-# Nav2 drove in anyway - the local costmap only needs the inscribed radius to
-# squeeze through - and then the global planner, which respects the full
-# footprint, could not find a way back out. Every goal after the pick aborted,
-# with the robot sitting level and undamaged in 0.75 m of clear space.
-#
-# So the check is: stamp the candidate bench into the map, THEN confirm the
-# standing pose still shares a component with both the fleet ring and the
-# delivery point. Three of the five candidates passed that; two did not.
-BENCH_COLLECT = (-7.00, -26.50, 0.0)
-# The rack sits 0.53 m out along the shelf, the offset hospital_lab uses.
-RACK = (-7.53, -26.50)
+# lab_bench's shelf protrudes in -x, so yaw pi turns it to face +x: the shelf,
+# the rack on it and the robot's standing pose are all east of the bench origin.
+BENCH_COLLECT = (-3.015, -27.172, 3.1415927)
+# The rack sits 0.53 m out along the shelf, the offset hospital_lab uses, which
+# with yaw pi is +x in the world. It stands ON the shelf at z 0.30 - spawned at
+# the wrong place once, it simply lay on the floor beside the bench and the
+# grasp height was 0.30 m too high.
+RACK = (-2.485, -27.172)
 
-# --- delivery: bench in the lobby, shelf facing south ------------------------
-# The one pose that passed the back-off test unchanged: 0.69 m behind it.
-BENCH_DELIVER = (-4.00, 9.00, 1.5707963)
-DOCK = (-4.00, 8.50)
+# --- delivery: bench at the information desk, shelf facing north --------------
+#
+# ALSO PLACED BY HAND, then squared up. The bench was dropped in at
+# (-0.098, 0.461) with 6.8 deg of pitch, 2.1 deg of roll, 0.274 m of float and a
+# yaw of -93.3 - a GUI drag, not a considered pose. Tidying it is arithmetic
+# against two measured edges, not taste:
+#
+#   the information desk's north face runs dead straight along y = 0.000,
+#   sampled every 0.5 m from x -2.0 to +2.0 and identical at every one.
+#
+#   lab_bench at yaw -pi/2 maps its local +x (the worktop's back edge, +0.38)
+#   to world -y, so the bench's back sits 0.38 m south of its origin.
+#
+# y 0.50 therefore leaves a clean 0.12 m gap to the counter, x 0.00 centres the
+# 2.06 m carcass on the desk, and the shelf - local x -0.65..-0.35 - comes out
+# at world y 0.85..1.15, facing north into the open lobby where the robot has
+# room to approach and turn.
+BENCH_DELIVER = (0.00, 0.50, -1.5707963)
+# The dock stands 0.50 m out along the shelf, which is +y at this yaw. That puts
+# it at the exact centre of the shelf slab (0.85..1.15) rather than perched on
+# an edge, and PROP_SPAWN_Z lands it on the 0.30 m shelf top.
+DOCK = (0.00, 1.00)
 DOCK_TOP = 0.38
 
 # --- the handover -------------------------------------------------------------

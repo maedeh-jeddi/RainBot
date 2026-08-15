@@ -695,12 +695,13 @@
     <static>true</static>
     <pose>-9.08927 9.19494 1.84129 0 0 -1.5625</pose>
     </include>
-    <include>
-    <name>aws_robomaker_residential_PortraitD_02_8</name>
-    <uri>model://aws_robomaker_residential_PortraitD_02</uri>
-    <static>true</static>
-    <pose>-8.94468 7.73571 1.54508 0 -0 1.57083</pose>
-    </include>
+    <!-- An AWS portrait used to hang here, at (-8.94468, 7.73571, 1.54508). It
+         was taken down to make room for the "quiet please" poster, which now
+         occupies that stretch of the west wall at y 7.525 - see the
+         no_talk_poster includes further down. The two overlapped, so this is a
+         deletion rather than a move: leaving it in would have printed one
+         frame through the other. Restoring it means putting this include back
+         AND shifting the poster off that spot. -->
     <include>
     <name>aws_robomaker_residential_PortraitE_02_1</name>
     <uri>model://aws_robomaker_residential_PortraitE_02</uri>
@@ -1081,7 +1082,12 @@
          wall surface itself and the yaw is the wall's inward normal - the model
          carries its own standoff, see models/no_talk_poster. z is the middle of
          the print, so it spans 1.15-2.05 m - eye level for someone standing,
-         and clear of the seated visitors on the PotatoChipChairs. -->
+         and clear of the seated visitors on the PotatoChipChairs.
+
+         The west one was moved by hand in the GUI, from y 6.00 to y 7.525, and
+         these numbers are read back off the running world rather than chosen.
+         That is also why an AWS portrait is missing from this wall - it hung at
+         y 7.736, which is where the poster now is. -->
     <include>
       <uri>model://no_talk_poster</uri>
       <name>no_talk_poster_lobby_east</name>
@@ -1090,7 +1096,7 @@
     <include>
       <uri>model://no_talk_poster</uri>
       <name>no_talk_poster_lobby_west</name>
-      <pose>-8.94 6.00 1.60 0 0 0</pose>
+      <pose>-8.94 7.525 1.60 0 0 0</pose>
     </include>
 
     <include>
