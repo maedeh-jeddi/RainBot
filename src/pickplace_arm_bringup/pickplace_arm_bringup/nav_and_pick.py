@@ -33,7 +33,6 @@ import tf2_ros
 import tf2_geometry_msgs  # registers do_transform_point for PointStamped
 
 from nav2_msgs.action import NavigateToPose
-from nav2_msgs.srv import ClearEntireCostmap
 
 from pickplace_arm_bringup.pick_and_place import scan_quat
 from pickplace_arm_bringup.search_and_pick import (
@@ -71,13 +70,7 @@ class NavAndPick(SearchAndPick):
         # controller directly. Navigation (Nav2) and this node's spin/visual
         # servo run in separate, non-overlapping phases, so they can share that
         # topic without a twist_mux arbitrating between them.
-        self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        # Costmap clearing. Relative names so they land under the robot's
-        # namespace exactly like every other client here.
-        self._clear_local = self.create_client(
-            ClearEntireCostmap, 'local_costmap/clear_entirely_local_costmap')
-        self._clear_global = self.create_client(
-            ClearEntireCostmap, 'global_costmap/clear_entirely_global_costmap')
+        self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.get_logger().info('Nav-and-pick node ready')
 
     # --- scan one full revolution in place, return the box if seen ----------
@@ -122,7 +115,7 @@ class NavAndPick(SearchAndPick):
     def box_in_map(self, bx, by):
         try:
             tf = self.tf_buffer.lookup_transform(
-                'map', self.tf_frame('base_link'), rclpy.time.Time(),
+                'map', 'base_link', rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=2.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
@@ -134,40 +127,10 @@ class NavAndPick(SearchAndPick):
         pm = tf2_geometry_msgs.do_transform_point(pt, tf)
         return pm.point.x, pm.point.y
 
-    # --- and the other way: a map point in the robot's own frame -------------
-    def map_point_in_base(self, mx, my):
-        """Where a KNOWN map point sits relative to the robot right now.
-
-        box_in_map above answers "the camera sees something there, where is that
-        in the building?". This answers the opposite question, which is the one
-        a handover asks: the transfer point is a fixed map coordinate agreed
-        between two robots, and the arm has to be told where it is in base_link.
-
-        NOT A CONSTANT, AND THAT IS THE POINT. Nav2 parks with a real tolerance
-        (nav2_params.yaml: xy 0.20), so a robot standing "at" the handover pose
-        may be up to 0.20 m off it in any direction. Commanding the arm to the
-        nominal offset instead of the measured one puts the payload down that
-        far from where the other robot expects to find it - and the whole margin
-        between the transfer point and MAX_REACH_X is 0.075 m.
-        """
-        try:
-            tf = self.tf_buffer.lookup_transform(
-                self.tf_frame('base_link'), 'map', rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=2.0))
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException) as e:
-            self.get_logger().error(f'[nav] base_link<-map TF failed: {e}')
-            return None
-        pt = PointStamped()
-        pt.header.frame_id = 'map'
-        pt.point.x, pt.point.y, pt.point.z = mx, my, 0.0
-        pb = tf2_geometry_msgs.do_transform_point(pt, tf)
-        return pb.point.x, pb.point.y
-
     def robot_in_map(self):
         try:
             tf = self.tf_buffer.lookup_transform(
-                'map', self.tf_frame('base_link'), rclpy.time.Time(),
+                'map', 'base_link', rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=2.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
@@ -195,112 +158,19 @@ class NavAndPick(SearchAndPick):
         return self.make_map_goal(bx - APPROACH_DIST * ux,
                                   by - APPROACH_DIST * uy, math.atan2(uy, ux))
 
-    # Per-mission override of NAV_TIMEOUT_SEC. A class attribute rather than a
-    # module constant because how long a drive legitimately takes is a property
-    # of the BUILDING, not of the code: hospital_lab's longest leg is about 20 m
-    # and 120 s is generous there, while the AWS hospital's collect run is a
-    # ~45 m route through the west corridor and times out at 120 s having done
-    # nothing wrong. Raising the module constant instead would have made every
-    # mission wait four times as long to notice a genuinely stuck robot.
-    NAV_TIMEOUT_SEC = NAV_TIMEOUT_SEC
-
-    def clear_costmaps(self, label=''):
-        """Throw away both costmaps' accumulated obstacles.
-
-        WHY THIS IS NEEDED BEFORE EVERY GOAL, NOT JUST AFTER A FAILURE.
-        The pick parks the robot 0.87 m from a bench and then sweeps the arm
-        through the LIDAR's scan plane at 0.4466 m - descend, grasp, break
-        contact, lift, carry - at ranges of a few tens of centimetres. Every one
-        of those returns is marked into the local costmap as an obstacle, and
-        they are marked in a ring that follows the arm around the robot.
-
-        Marking is instant; CLEARING is not. A cell is only cleared when a later
-        beam passes THROUGH it and reports free, and the arm has moved away by
-        then, so nothing ever ray-traces those cells again. The robot is left
-        standing inside a ring of obstacles that do not exist.
-
-        What that looks like from outside is exactly what gets reported as the
-        robot "getting confused and spinning": every goal fails to plan, and
-        then every recovery refuses to run because the way out is blocked too -
-
-            Running backup -> Collision Ahead - Exiting DriveOnHeading -> failed
-            Running spin   -> Collision Ahead - Exiting Spin           -> failed
-            Running wait   -> wait completed successfully
-
-        and Nav2 cycles backup/spin/wait for minutes before giving up, with the
-        robot sitting at a spot the static map says has 1.30 m of clearance.
-
-        Clearing is cheap and safe: a real obstacle is re-marked on the next
-        scan, 0.1 s later, long before the robot has moved anywhere near it.
-        """
-        log = self.get_logger()
-        for name, cli in (('local', self._clear_local), ('global', self._clear_global)):
-            if not cli.wait_for_service(timeout_sec=3.0):
-                log.warn(f'[nav] {name} costmap clear service unavailable')
-                continue
-            fut = cli.call_async(ClearEntireCostmap.Request())
-            rclpy.spin_until_future_complete(self, fut, timeout_sec=5.0)
-            if fut.result() is None:
-                log.warn(f'[nav] {name} costmap clear did not return')
-        log.info(f'[nav] costmaps cleared{" " + label if label else ""}')
-        # One scan period, so the real obstacles are back before anyone plans.
-        time.sleep(0.3)
-
-    def navigate_to(self, goal_pose, timeout_sec=None, retries=2):
+    def navigate_to(self, goal_pose, timeout_sec=NAV_TIMEOUT_SEC, retries=2):
         """Send a NavigateToPose goal and wait for it to actually SUCCEED.
         A goal that ABORTs (e.g. the Nav2 race right after canceling a patrol,
         or a transient plan failure) is retried after a short settle -- treating
         such a completion as 'arrived' would hand off to the visual servo from
         the wrong place."""
-        if timeout_sec is None:
-            timeout_sec = self.NAV_TIMEOUT_SEC
         log = self.get_logger()
         # Be patient discovering the action server: under heavy sim-startup load
         # DDS discovery of bt_navigator can take well over 10 s.
         if not self.nav_client.wait_for_server(timeout_sec=45.0):
             log.error('[nav] NavigateToPose action server unavailable')
             return False
-        # ALREADY THERE? THEN DO NOT ASK NAV2 TO DRIVE THERE.
-        #
-        # The back-off goal after a pick is the approach pose the robot is still
-        # standing on, so it is routinely a goal 0.2 m away. Nav2 handles that
-        # badly: the planner returns a path barely longer than a point, the
-        # controller cannot extract a heading from it, and the goal checker
-        # never fires. Observed on the collect run - the robot sat 0.25 m from
-        # the goal while controller_server logged "Passing new path to
-        # controller" once a second for the full 300 s timeout, then failed a
-        # goal it had been standing on the whole time.
-        #
-        # Five minutes of fidgeting, then a failure, for a move of 0.2 m. The
-        # tolerances used here are the goal checker's own (nav2_params.yaml:
-        # xy 0.20, yaw 0.5), so this accepts exactly what Nav2 would accept.
-        here = self.robot_in_map()
-        if here is not None:
-            gq = goal_pose.pose.orientation
-            gyaw = math.atan2(2*(gq.w*gq.z + gq.x*gq.y), 1 - 2*(gq.y*gq.y + gq.z*gq.z))
-            try:
-                tf = self.tf_buffer.lookup_transform(
-                    'map', self.tf_frame('base_link'), rclpy.time.Time(),
-                    timeout=rclpy.duration.Duration(seconds=2.0))
-                q = tf.transform.rotation
-                ryaw = math.atan2(2*(q.w*q.z + q.x*q.y), 1 - 2*(q.y*q.y + q.z*q.z))
-            except Exception:
-                ryaw = None
-            d = math.hypot(here[0] - goal_pose.pose.position.x,
-                           here[1] - goal_pose.pose.position.y)
-            dyaw = (abs(math.atan2(math.sin(gyaw - ryaw), math.cos(gyaw - ryaw)))
-                    if ryaw is not None else 0.0)
-            if d <= 0.20 and dyaw <= 0.5:
-                log.info(f'[nav] already at the goal ({d:.2f} m, '
-                         f'{math.degrees(dyaw):.0f} deg off) -- not driving')
-                return True
-
         for attempt in range(retries + 1):
-            # Clear before every attempt. The first one matters because the goal
-            # right after a pick starts from inside the phantom ring the arm
-            # painted; the retries matter because a goal that just failed has
-            # usually spent its recovery cycle adding more of the same.
-            self.clear_costmaps(f'before goal attempt {attempt + 1}')
             goal_msg = NavigateToPose.Goal()
             goal_pose.header.stamp = self.get_clock().now().to_msg()
             goal_msg.pose = goal_pose

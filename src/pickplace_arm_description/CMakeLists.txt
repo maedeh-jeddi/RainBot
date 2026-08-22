@@ -14,17 +14,8 @@ find_package(ament_cmake REQUIRED)
 # warehouse world pulls in (warehouse shell, shelves, pallets, carts, Tugbot).
 # Pointing GZ_FUEL_CACHE_PATH at it (see gazebo.launch.py) makes the world
 # load with no network access and no ~/.gz/fuel pre-fetch step.
-# `aws_hospital_models/` holds the building shell, curtains, elevator and
-# nurses' station that ship with AWS RoboMaker's hospital world; aws_hospital.sdf
-# keeps AWS's own model:// URIs for them and gazebo.launch.py puts this
-# directory on GZ_SIM_RESOURCE_PATH. Leaving it out of this list does not fail
-# the build - it fails at RUNTIME, and loudly: every one of those URIs comes back
-# as "Error Code 14" against a path under install/, the world never finishes
-# loading, and the gz server exits and takes the whole launch down with it.
-# Amazon's licence sits alongside the meshes.
 install(
   DIRECTORY urdf launch rviz config worlds models meshes fuel_cache
-            aws_hospital_models
   DESTINATION share/${PROJECT_NAME}
 )
 

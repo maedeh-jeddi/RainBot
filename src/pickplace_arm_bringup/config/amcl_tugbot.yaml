@@ -19,177 +19,28 @@ amcl:
 
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
     laser_model_type: "likelihood_field"
-    # Matches the LIDAR's own 25 m reach (see pickplace_arm.gazebo.xacro).
-    # AMCL discards returns beyond this, so a value below the sensor's range
-    # silently throws away the long beams that disambiguate a 40 m corridor.
-    laser_max_range: 25.0
+    laser_max_range: 8.0
     laser_min_range: 0.15
     max_beams: 90
     min_particles: 500
     max_particles: 2000
 
     # motion noise (diff drive)
-    #
-    # RAISING THESE WAS TRIED AND DID NOT HELP - left at the baseline. On the
-    # aws_hospital route AMCL ends up metres from the truth (see the note on
-    # recovery_alpha_* below), and 0.6/0.6/0.4/0.4 was tried on the theory that
-    # a four-wheel skid-steer slips too much for the two-wheel defaults. The run
-    # with those values failed EARLIER than the baseline - it never reached the
-    # collect bench at all, where the baseline at least got there and picked -
-    # so they are reverted rather than kept on the argument that they ought to
-    # help. Measured inputs, for whoever picks this up:
-    #
-    #   raw wheel odometry, over the 39 m collect run: 24.35 m from truth, and
-    #     a heading of +5.5 deg where the robot really faced +123.3
-    #   the EKF, fusing that with the IMU, over the same run: 2.97 m
-    #
-    # The EKF is doing its job. Note AMCL comes out WORSE than the EKF it rides
-    # on, which is the part that does not fit a mere tuning problem.
     alpha1: 0.2
     alpha2: 0.2
     alpha3: 0.2
     alpha4: 0.2
 
     # likelihood field
-    #
-    # z_rand IS THE WEIGHT GIVEN TO EXPLAINING NOTHING, AND AT 0.5 IT WAS HALF
-    # THE ANSWER.
-    #
-    # Every beam's likelihood is z_hit * (a Gaussian on the distance to the
-    # nearest mapped obstacle) + z_rand * (a uniform constant). The uniform term
-    # is there so one unexpected object cannot veto an otherwise good pose. At
-    # 0.5 it stops being a safety net: a pose that explains NOTHING still
-    # collects half the score of a perfect one, so the likelihood field goes
-    # nearly flat and wrong hypotheses stay competitive with the right one.
-    #
-    # That is measurable here, and it is what the failure looks like. With the
-    # robot STATIONARY in the collect bay, its scan projected from the TRUE pose
-    # landed on a mapped wall for 100% of beams - the correct answer scores
-    # perfectly and is available - while AMCL held a belief 5.31 m away, sample
-    # after sample. And the error did not creep there: it JUMPED, 0.34 m to
-    # 4.96 m across a single 0.66 m step. A filter drifts when it is starved of
-    # information; it jumps when a wrong hypothesis outscores the right one.
-    #
-    # The bay is where it happens because that is where the geometry stops
-    # helping: 12.0 m of parallel east-west wall, nearly identical along its
-    # length, so the only thing separating the true pose from one 5 m down the
-    # corridor is how sharply the sensor model punishes unexplained beams. At
-    # z_rand 0.5 it barely punishes them at all.
-    #
-    # 0.95/0.05 is the usual pairing and restores the discrimination. This is
-    # deliberately the SENSOR model: alpha1-4 and recovery_alpha are the motion
-    # side, both were tried before (see the notes above and below), and neither
-    # helped - which fits, because nothing was ever wrong with the motion model.
-    #
-    # sigma_hit comes down with it. At 0.2 the Gaussian is 0.2 m wide against a
-    # 0.05 m map, so a beam landing a whole four cells off scored like a hit and
-    # blurred the peak this change exists to sharpen.
-    # ISOLATION TEST IN PROGRESS - these are back at the ORIGINAL values on
-    # purpose, so that the 25 m LIDAR range (see pickplace_arm.gazebo.xacro) is
-    # the only thing separating this configuration from the one that used to
-    # slip 4.6 m in the north-south corridor. If the corridor stays clean with
-    # z_rand back at 0.5, the range was the whole fix and the sensor-model
-    # reasoning below, however sound it reads, was not what did the work.
-    #
-    # What is already known, from two runs: z_rand 0.05 ALONE (8 m range) did
-    # not stop the slip, and 25 m + z_rand 0.05 together took the worst error
-    # over the 39 m collect leg from 4.60 m to 0.59 m.
-    #
-    # Superseded note from the previous attempt:
-    # SINGLE-VARIABLE TEST. Only z_hit/z_rand move; sigma_hit stays at 0.2 so
-    # that if this helps or hurts, exactly one thing explains it. Baseline it is
-    # being compared against, measured on a freshly booted machine with AMCL
-    # dropping ZERO scans: truth (1.286,-27.064) against a belief of
-    # (4.975,-30.186), i.e. 4.83 m out, along the corridor axis.
-    # Previous note, kept because the caution still applies:
-    # 0.95/0.05/0.1 was tried and the run that carried it also dropped the two
-    # parked robots from the fleet, so when it failed - 634 scans discarded by
-    # AMCL's message filter against 0 on the previous run - there was no way to
-    # say which change did it. The drops were "timestamp earlier than all the
-    # data in the transform cache", which is a startup-timing symptom and points
-    # at the shorter bring-up rather than at the sensor model, but pointing is
-    # not measuring. Two variables, one result, no conclusion.
-    #
-    # Left at the values the last run that reached the doorway used, so the next
-    # experiment starts from a known state and moves ONE of them.
     z_hit: 0.5
     z_rand: 0.5
     sigma_hit: 0.2
     laser_likelihood_max_dist: 2.0
 
-    # HOW OFTEN THE FILTER UPDATES, AND WHY THAT IS A RESAMPLING BUDGET RATHER
-    # THAN A FRESHNESS DIAL.
-    #
-    # These were 0.02/0.02 - update on every 2 cm of travel or 1.1 degrees of
-    # turn - on the reasonable-sounding theory that a filter that corrects more
-    # often drifts less. With resample_interval at 1, every one of those updates
-    # also RESAMPLES, and that is the part that does not scale: the collect leg
-    # is a 39 m drive, so 0.02 m spacing buys roughly two thousand consecutive
-    # resamples before the robot even reaches the bench.
-    #
-    # Resampling is lossy. Each pass discards low-weight particles and
-    # duplicates high-weight ones, so repeated resampling without new
-    # information collapses the cloud onto whichever hypothesis happened to be
-    # ahead - classic particle depletion. A depleted filter has nothing left to
-    # recover WITH, and it stops behaving like a filter and starts behaving like
-    # a commitment.
-    #
-    # That matches the one measurement in this file that never fitted a plain
-    # tuning problem: AMCL ending up WORSE than the EKF it rides on (2.97 m).
-    # A filter that merely lacked correction would track its odometry and land
-    # near it. One that has collapsed onto a wrong hypothesis actively pulls
-    # away from it, which is what the numbers show.
-    #
-    # It also matches where the error appears. The bay at the collect bench is a
-    # 12.0 m east-west run of parallel walls (measured off this package's map,
-    # x -2.65 .. 9.35 along y -27.25) - the one place a scan gives almost no
-    # information along the corridor axis, and therefore the one place the
-    # filter most needs the diversity it has just spent. The observed failure is
-    # a 2.4 m slip ALONG that axis: Nav2 reported the (5.45,-27.25) waypoint
-    # reached, with the correct heading, while ground truth put the robot at
-    # (3.06,-26.93) with its nose against the wall.
-    #
-    # Back to nav2's baseline, which is what the commented values here were.
-    # If this needs to move again, move resample_interval first: raising it
-    # decouples "how often the filter looks" from "how often it throws
-    # particles away", which is the actual coupling that hurt here.
     update_min_a: 0.2
     update_min_d: 0.25
     resample_interval: 1
     transform_tolerance: 1.0
-    # THE OPEN BUG ON THE aws_hospital ROUTE LIVES HERE. Recovery is off, and
-    # turning it on (0.001 / 0.1, the standard nav2 pair) was tried and did NOT
-    # fix it, so it is back at 0.0 rather than left on untested.
-    #
-    # What actually happens: AMCL's belief drifts metres from the truth - 7.70 m
-    # measured at the end of one collect run, 5.80 m part-way through another.
-    # The consequence surfaces somewhere that looks unrelated: the believed pose
-    # landed 0.10 m from a wall, less than the robot's 0.335 m inscribed radius,
-    # so the global planner had no navigable start cell and answered every
-    # delivery goal with "failed to create plan with tolerance 0.50" - a bare
-    # status=6 at the mission, with nothing in the log about localisation.
-    #
-    # RULED OUT BY MEASUREMENT, so nobody repeats them:
-    #   the map          - the live scan projected at the TRUE pose puts 80% of
-    #                      endpoints within 0.20 m of a mapped obstacle, mean
-    #                      0.102 m, and the best alignment within half a metre
-    #                      reaches 100%. The sensor model has a sharp optimum
-    #                      exactly where the robot really is.
-    #   the lidar        - 261 of 270 beams usable; nothing returns between 0.3
-    #                      and 0.9 m, so the carried rack is not blocking it.
-    #   wheel geometry   - URDF radius 0.1651 and separation 0.555 match the
-    #                      controller's configured values exactly.
-    #   duplicate TF     - diff_drive_controller has enable_odom_tf false; the
-    #                      EKF is the only publisher of odom->base_link.
-    #   initial pose     - the fleet launch overrides initial_pose per robot, so
-    #                      each AMCL starts at its own real spawn pose.
-    #   dropped scans    - one Message Filter drop in a whole run, not the
-    #                      systematic starvation that would explain this.
-    #
-    # The suggestive fact left over: AMCL ends up WORSE than the EKF dead
-    # reckoning it rides on (2.97 m over the same run). A filter that corrects
-    # at all should not do that, so the next thing to look at is whether the
-    # correction is being applied and published, not how the filter is tuned.
     recovery_alpha_slow: 0.0
     recovery_alpha_fast: 0.0
     tf_broadcast: true

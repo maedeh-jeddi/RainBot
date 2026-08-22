@@ -214,57 +214,11 @@ class Mission2(Mission):
     # COLUMN_X_OFFSET, i.e. the column centre at the normal stop; verified
     # reachable for all three column heights.
     COLUMN_PLACE_X = COLUMN_STOP_X + COLUMN_X_OFFSET
-    # Height of the grasped feature's CENTRE above the payload's own underside.
-    # The jaws close on that feature, so the fingertip frame sits exactly this
-    # far above whatever surface the payload has to end up standing on - which
-    # is what turns a target's top height into a fingertip z, both when picking
-    # and when placing.
-    #
-    # For a cube it is simply half the cube, which is why this used to be
-    # written inline as BOX_SIZE / 2.0. It stops being half of anything as soon
-    # as the payload is not a cube: the sample rack is grasped by a block on a
-    # gantry 0.17 m above its tray, so a placement computed as BOX_SIZE / 2.0
-    # would drive the rack 0.14 m THROUGH the shelf it was meant to stand on.
-    # Leave the table by navigating back to LAYOUT_TABLE_APPROACH rather than
-    # reversing blind. Off by default: the warehouse and hospital_lab picks
-    # happen in open rooms where a blind reverse has nothing to hit, and their
-    # behaviour should not change. See the back-off in run_mission_2.
-    BACK_OFF_VIA_NAV = False
-
-    PAYLOAD_GRIP_HEIGHT = BOX_SIZE / 2.0
-    # Where the grasped feature reads (base_link z) with the payload sitting on
-    # the FLOOR. _placement_landed compares against this to tell "on the target"
-    # from "dropped beside it".
-    PAYLOAD_FLOOR_Z = EXPECTED_BOX_Z
-    # Colour to look for when verifying a placement. None means "the target's
-    # own colour", which is right in the warehouse because each column is
-    # painted its box's colour. The hospital run sets it: the dock is green and
-    # the rack is red, so the check looks for the rack rather than the dock.
-    PLACE_VERIFY_COLOR = None
-    # Colour of the placement TARGET, for the servo that centres the base on it.
-    # None means "the same colour as the payload" - true in the warehouse, where
-    # each column is painted its own box's colour, and the reason this was not a
-    # separate value before. It is false anywhere the target is a fixture rather
-    # than a colour-matched pillar: the hospital's dock is green and its payload
-    # red, and using the payload's colour there finds nothing at all.
-    TARGET_COLOR = None
-    # Unit vector from the placement target to the standoff the base is sent to,
-    # i.e. which SIDE the target is approached from. Yaw is derived from it, so
-    # the base always arrives facing the target.
-    #
-    # (1, 0) reproduces the warehouse exactly: its columns are approached from
-    # +x facing -x, because the robot comes from the table on that side. It was
-    # hardcoded as col_x + NAV_STANDOFF with yaw = pi, which silently assumed
-    # every world approaches from the same side. In the hospital the robot
-    # arrives from the corridor to the WEST while the bench body sits east of
-    # the dock, so the hardcoded side parked it behind the bench looking at its
-    # back panel, with the dock hidden on the far side.
-    PLACE_APPROACH_DIR = (1.0, 0.0)
 
     def __init__(self):
         super().__init__()
         self._set_params_client = self.create_client(
-            SetParameters, 'controller_server/set_parameters')
+            SetParameters, '/controller_server/set_parameters')
         self.get_logger().info('Mission 2 node ready')
 
     # --- Nav2 tuning ----------------------------------------------------------
@@ -312,8 +266,7 @@ class Mission2(Mission):
         publishing (see _creep_forward). Callers must tolerate None."""
         try:
             tf = self.tf_buffer.lookup_transform(
-                self.tf_frame('odom'), self.tf_frame('base_link'),
-                rclpy.time.Time(),
+                'odom', 'base_link', rclpy.time.Time(),
                 timeout=RclDuration(seconds=timeout_sec))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
@@ -482,7 +435,7 @@ class Mission2(Mission):
         # is measured from the floor, so it has to be lifted into the base_link
         # frame; the box centre then sits half a box above the column top, and
         # the fingertip frame is at the box centre.
-        top_z = GROUND_Z + height + self.PAYLOAD_GRIP_HEIGHT
+        top_z = GROUND_Z + height + BOX_SIZE / 2.0
         # The over-column waypoint must clear the column TOP. The held box now
         # hangs ~BOX_SIZE/2 below the fingertip frame, NOT the ~0.08 m it hung
         # below gripper_base, so the clearance term below shrank accordingly.
@@ -611,141 +564,24 @@ class Mission2(Mission):
         # the camera actually locked onto was the top 2 cm of the blue column.
         # Starting 5 mm above the top excludes the pillar entirely, so any
         # detection inside the gate really is the box.
-        # The gate is centred on where the grasped feature must end up, i.e.
-        # PAYLOAD_GRIP_HEIGHT above the target top, and starts above the target
-        # top so a same-coloured pillar cannot creep into the blob. For a cube
-        # those two coincide (the feature IS the box) and this is the original
-        # height+0.005 .. height+BOX_SIZE+0.02 band; for a payload whose colour
-        # sits high on a gantry the band follows it up instead of looking at
-        # empty air just above the target.
-        verify_color = self.PLACE_VERIFY_COLOR or color
-        mark_z = height + self.PAYLOAD_GRIP_HEIGHT
-        lo = max(height + 0.005, mark_z - BOX_SIZE) - FRONT_CAM_Z
-        hi = mark_z + BOX_SIZE - FRONT_CAM_Z
+        lo = height + 0.005 - FRONT_CAM_Z
+        hi = height + BOX_SIZE + 0.02 - FRONT_CAM_Z
         gate = (0.05, 1.5, -0.6, 0.6, lo, hi)
-        det = self.detect_box_front(timeout_sec=2.0, color=verify_color, gate=gate)
+        det = self.detect_box_front(timeout_sec=2.0, color=color, gate=gate)
         if det is None:
-            log.error(f'[place] no {verify_color} payload above target '
-                      f'{tag_id}\'s top after release -- it is not on the '
-                      f'target. FAILED.')
+            log.error(f'[place] no {color} box above column {tag_id}\'s top '
+                      f'after release -- it is not on the column. FAILED.')
             return False
         bz = det[2]
-        floor_z = self.PAYLOAD_FLOOR_Z
-        placed_z = self.PAYLOAD_FLOOR_Z + height
+        floor_z = EXPECTED_BOX_Z
+        placed_z = EXPECTED_BOX_Z + height
         if bz < (floor_z + placed_z) / 2.0:
-            log.error(f'[place] {verify_color} payload is at z={bz:.3f} -- that '
-                      f'is floor level (~{floor_z:.3f}), not target {tag_id} top '
+            log.error(f'[place] {color} box is at z={bz:.3f} -- that is floor '
+                      f'level (~{floor_z:.3f}), not column {tag_id} top '
                       f'(~{placed_z:.3f}). Placement FAILED.')
             return False
-        log.info(f'[place] verified: {verify_color} payload at z={bz:.3f} '
-                 f'(target top ~{placed_z:.3f})')
-        return True
-
-    # --- the two legs, each usable on its own --------------------------------
-    #
-    # SPLIT OUT SO THE RELAY CAN RUN ONE LEG EACH. run_mission_2 below is these
-    # two called back to back, which is what one robot doing the whole route
-    # IS; mission_hospital_relay gives the collect leg to one robot and the
-    # deliver leg to another, with a handover spliced into the join. Nothing was
-    # retuned in the move - every constant, every tightened tolerance and every
-    # ordering below is the code that already flies, lifted verbatim - because
-    # the whole reason the single-robot route was built first was so that the
-    # relay would be that route cut in half rather than a second implementation.
-
-    def collect_from_table(self, color, box_xy):
-        """Drive to the table approach pose, pick the `color` payload off it,
-        and get clear of the bench. Returns True with the payload held."""
-        log = self.get_logger()
-        # Tighten Nav2's arrival heading here (see TIGHT_YAW_TOLERANCE): an
-        # off-axis arrival biases the front camera's HSV-centroid grasp
-        # reading, which showed up as a real ~3.5cm lateral grasp-centering
-        # error (confirmed via ground-truth Gazebo pose vs the camera's own
-        # detection at grasp time) tracing back to a ~10.5deg arrival heading
-        # error.
-        self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
-        nav_ok = self.navigate_to(self.make_map_goal(*self.LAYOUT_TABLE_APPROACH))
-        self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
-        if not nav_ok:
-            log.error('Table navigation failed -- aborting.')
-            return False
-        box_map = (box_xy[0], box_xy[1])
-        if not self.claw_pick(box_map, color=color,
-                              grasp_z=self.LAYOUT_TABLE_GRASP_Z,
-                              x_offset=self.LAYOUT_TABLE_X_OFFSET):
-            log.error(f'Failed to pick the {color} box -- aborting.')
-            return False
-
-        # Get clear of the table so Nav2 can turn and plan without the bench,
-        # right in front of the robot, tripping its collision check.
-        #
-        # TWO WAYS TO DO THAT, AND THE BLIND ONE IS ONLY SAFE IN AN OPEN ROOM.
-        # _drive_blind reverses along whatever heading the robot happens to
-        # hold, with no costmap and no look behind. After the visual servo and
-        # the grasp that heading is NOT the approach heading any more - measured
-        # 55 degrees off it on the AWS hospital collect - so 0.63 m of blind
-        # reverse goes somewhere nobody checked. There it drove the chassis onto
-        # the bench's own transfer shelf, which stands 0.30 m off the floor
-        # against a 0.165 m wheel: the robot ended up 36 degrees nose-up, 0.15 m
-        # in the air, in a cell with less clearance than its own footprint. Nav2
-        # then had no valid start pose and aborted every goal for the rest of
-        # the run.
-        #
-        # Navigating back to the approach pose instead costs one Nav2 goal and
-        # uses the costmap. That pose is already known good: it is the one the
-        # robot drove to, and it is checked for back-off room when it is chosen
-        # (see hospital_aws_layout).
-        if self.BACK_OFF_VIA_NAV:
-            log.info('[mission2] navigating back to the approach pose')
-            if not self.navigate_to(
-                    self.make_map_goal(*self.LAYOUT_TABLE_APPROACH)):
-                log.warning('[mission2] could not get back to the approach '
-                            'pose -- falling back to a blind reverse')
-                self._drive_blind(-0.18, 3.5)
-                self._stop_base()
-        else:
-            log.info('[mission2] backing off the table')
-            self._drive_blind(-0.18, 3.5)
-            self._stop_base()
-        return True
-
-    def deliver_to_column(self, tag_id, height, col_xy, color):
-        """Carry the held payload to column `tag_id` and place it on top.
-        `color` is the payload's own colour; the target's is TARGET_COLOR."""
-        log = self.get_logger()
-        # Drive to a standoff in front of the column (facing it), then visually
-        # centre the base on it (front camera) and place the payload on top.
-        # Tighten Nav2's own arrival heading just for this goal:
-        # approach_column's heading correction (_face_box) is capped at ~57deg
-        # so it can't recover an arbitrarily bad arrival, and a heading error
-        # beyond that puts the column outside the front camera's view entirely
-        # (confirmed live). Restored right after so the looser default (which
-        # avoids skid-steer oscillation) still applies to every other goal.
-        target_color = self.TARGET_COLOR or color
-        adx, ady = self.PLACE_APPROACH_DIR
-        approach = (col_xy[0] + adx * NAV_STANDOFF,
-                    col_xy[1] + ady * NAV_STANDOFF,
-                    math.atan2(-ady, -adx))
-        self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
-        nav_ok = self.navigate_to(self.make_map_goal(*approach))
-        self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
-        if not nav_ok:
-            log.error(f'Column {tag_id} navigation failed -- aborting.')
-            return False
-        # The box can slip out of the jaws during the drive here (the known
-        # intermittent carry slip), and nothing downstream would notice:
-        # place_on_column servos onto the column, opens an empty gripper and
-        # reports success, and only _placement_landed catches it -- after a
-        # pointless full placement. Seen live in this world: box_red ended up on
-        # the floor mid-route at world (0.74,-0.24), tipped on its side, while
-        # the mission carried on to the column regardless. grasp_is_holding is
-        # just a finger-gap read, so this costs nothing.
-        if not self.grasp_is_holding():
-            log.error(f'{color} box was DROPPED during the carry to column '
-                      f'{tag_id} (gripper is empty on arrival) -- aborting.')
-            return False
-        if not self.place_on_column(tag_id, height, col_xy, target_color):
-            log.error(f'Failed to place on column {tag_id} -- aborting.')
-            return False
+        log.info(f'[place] verified: {color} box at z={bz:.3f} '
+                 f'(column top ~{placed_z:.3f})')
         return True
 
     # --- full mission -------------------------------------------------------
@@ -758,9 +594,64 @@ class Mission2(Mission):
         for (color, box_xy), (tag_id, height, col_xy) in zip(self.LAYOUT_BOXES,
                                                              self.LAYOUT_COLUMNS):
             log.info(f'--- {color} box -> column {tag_id} (h={height}) ---')
-            if not self.collect_from_table(color, box_xy):
+
+            # 1) drive to the table and pick the coloured box off it. Tighten
+            # Nav2's arrival heading here too (see TIGHT_YAW_TOLERANCE): an
+            # off-axis arrival biases the front camera's HSV-centroid grasp
+            # reading, which showed up as a real ~3.5cm lateral grasp-
+            # centering error (confirmed via ground-truth Gazebo pose vs the
+            # camera's own detection at grasp time) tracing back to a ~10.5deg
+            # arrival heading error.
+            self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
+            nav_ok = self.navigate_to(self.make_map_goal(*self.LAYOUT_TABLE_APPROACH))
+            self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
+            if not nav_ok:
+                log.error('Table navigation failed -- aborting.')
                 return
-            if not self.deliver_to_column(tag_id, height, col_xy, color):
+            box_map = (box_xy[0], box_xy[1])
+            if not self.claw_pick(box_map, color=color,
+                                  grasp_z=self.LAYOUT_TABLE_GRASP_Z,
+                                  x_offset=self.LAYOUT_TABLE_X_OFFSET):
+                log.error(f'Failed to pick the {color} box -- aborting.')
+                return
+
+            # back straight off the table so Nav2 can turn/plan without the table
+            # (right in front of the robot) tripping its collision check.
+            log.info('[mission2] backing off the table')
+            self._drive_blind(-0.18, 3.5)
+            self._stop_base()
+
+            # 2) drive to a standoff in front of the column (facing it, yaw=pi
+            # since the robot approaches from the +x table side), then visually
+            # centre the base on it (front camera) and place the box on top.
+            # Tighten Nav2's own arrival heading just for this goal:
+            # approach_column's heading correction (_face_box) is capped at
+            # ~57deg so it can't recover an arbitrarily bad arrival, and a
+            # heading error beyond that puts the column outside the front
+            # camera's view entirely (confirmed live). Restored right after so
+            # the looser default (which avoids skid-steer oscillation) still
+            # applies to every other goal.
+            approach = (col_xy[0] + NAV_STANDOFF, col_xy[1], math.pi)
+            self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
+            nav_ok = self.navigate_to(self.make_map_goal(*approach))
+            self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
+            if not nav_ok:
+                log.error(f'Column {tag_id} navigation failed -- aborting.')
+                return
+            # The box can slip out of the jaws during the drive here (the known
+            # intermittent carry slip), and nothing downstream would notice:
+            # place_on_column servos onto the column, opens an empty gripper and
+            # reports success, and only _placement_landed catches it -- after a
+            # pointless full placement. Seen live in this world: box_red ended
+            # up on the floor mid-route at world (0.74,-0.24), tipped on its
+            # side, while the mission carried on to the column regardless.
+            # grasp_is_holding is just a finger-gap read, so this costs nothing.
+            if not self.grasp_is_holding():
+                log.error(f'{color} box was DROPPED during the carry to column '
+                          f'{tag_id} (gripper is empty on arrival) -- aborting.')
+                return
+            if not self.place_on_column(tag_id, height, col_xy, color):
+                log.error(f'Failed to place on column {tag_id} -- aborting.')
                 return
 
         log.info('=== MISSION 2: parking ===')

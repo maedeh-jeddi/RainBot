@@ -117,23 +117,10 @@ SEARCH_TIMEOUT_SEC = 240.0
 
 
 class Mission(NavAndPick):
-    # STOP DISTANCE IS MEASURED TO WHAT THE ROBOT CAN HIT, NOT TO WHAT IT IS
-    # LOOKING AT. The default is the module's CLAW_STOP_X, which assumes the
-    # payload is the nearest solid thing - true for a box on an open table.
-    #
-    # It is not true for the sample rack: that stands on a transfer shelf which
-    # protrudes 0.12 m PAST it toward the robot. Stopping 0.75 m from the rack
-    # therefore leaves the bumper (base_link x = 0.494) just 0.136 m off the
-    # shelf edge, and the shelf's top is 0.30 m up against a 0.165 m wheel - so
-    # the chassis lip rides onto it instead of stopping. Measured twice, at two
-    # different benches: the robot finished 20 to 36 degrees nose-up, 0.15 m in
-    # the air, in a cell too tight for its own footprint, where Nav2 had no
-    # valid start pose and aborted every goal after that.
-    CLAW_STOP_X = CLAW_STOP_X
     def __init__(self):
         super().__init__()
         self.tp_client = ActionClient(
-            self, NavigateThroughPoses, 'navigate_through_poses')
+            self, NavigateThroughPoses, '/navigate_through_poses')
         self.get_logger().info('Mission node ready')
 
     # --- helpers ------------------------------------------------------------
@@ -155,7 +142,7 @@ class Mission(NavAndPick):
         while time.time() < deadline:
             try:
                 self.tf_buffer.lookup_transform(
-                    'map', self.tf_frame('base_link'), rclpy.time.Time(),
+                    'map', 'base_link', rclpy.time.Time(),
                     timeout=rclpy.duration.Duration(seconds=1.0))
                 log.info('[mission] localized (map->base_link available)')
                 return True
@@ -293,7 +280,7 @@ class Mission(NavAndPick):
         log = self.get_logger()
         try:
             tf = self.tf_buffer.lookup_transform(
-                'map', self.tf_frame('base_link'), rclpy.time.Time(),
+                'map', 'base_link', rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=1.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException):
@@ -386,11 +373,11 @@ class Mission(NavAndPick):
             if det is not None:
                 lost = 0
                 bx, by, _ = det
-                if bx <= self.CLAW_STOP_X and abs(by) <= CLAW_Y_TOL:
+                if bx <= CLAW_STOP_X and abs(by) <= CLAW_Y_TOL:
                     self._stop_base()
                     log.info(f'[claw] box within reach (front {bx:.2f},{by:+.2f})')
                     return True
-                fwd = max(0.0, bx - self.CLAW_STOP_X)
+                fwd = max(0.0, bx - CLAW_STOP_X)
                 # Only apply the minimum-speed floor while there is still
                 # forward distance to close. The floor exists so the skid-steer
                 # reliably breaks static friction, but applying it

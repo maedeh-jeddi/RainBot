@@ -56,29 +56,6 @@
   <xacro:arg name="is_sim" default="false"/>
   <xacro:arg name="use_platform_controllers" default="false"/>
 
-  <!-- MULTI-ROBOT. Empty by default, and every use of it below is written so
-       that empty reproduces the single-robot description EXACTLY - the
-       missions that spawn one robot are unaffected by this arg existing.
-       Set it (e.g. robot_ns:=r1) and the description becomes one of several
-       that can share a world:
-
-         sensor topics    /scan           -> /r1/scan
-         sensor frames    lidar_link      -> r1/lidar_link
-         grasp topics     /box_red/attach -> /r1/box_red/attach
-         controller node  /controller_manager -> /r1/controller_manager
-
-       LINK NAMES ARE DELIBERATELY NOT PREFIXED. They are referenced by the
-       MoveIt config, the ros2_control joint list, the DetachableJoint's
-       parent_link and the Clearpath/Franka includes; prefixing them would mean
-       touching all of those. Gazebo scopes links by model name already, and the
-       TF tree is separated by robot_state_publisher's frame_prefix - which is
-       exactly what the prefixed sensor frames above are matched to. -->
-  <xacro:arg name="robot_ns" default=""/>
-  <xacro:property name="robot_ns" value="$(arg robot_ns)"/>
-  <!-- '' or '/r1' for topic names; '' or 'r1/' for frame ids. -->
-  <xacro:property name="ns_topic" value="${'' if robot_ns == '' else '/' + robot_ns}"/>
-  <xacro:property name="ns_frame" value="${'' if robot_ns == '' else robot_ns + '/'}"/>
-
   <xacro:property name="PI" value="3.14159265359"/>
 
   <!-- Materials for the sensor housings we add ourselves (the A200 and FR3
