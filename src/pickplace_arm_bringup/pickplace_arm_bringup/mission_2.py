@@ -37,12 +37,25 @@ from rcl_interfaces.srv import SetParameters
 
 from pickplace_arm_bringup.mission import Mission
 from pickplace_arm_bringup.pick_and_place import (
-    HOME_CONFIG, GRIPPER_X, GRIP_OPEN, BOX_ID, BOX_SIZE, GRASP_LINK,
+    HOME_CONFIG, GRIPPER_X, GRIP_OPEN, BOX_COLORS, BOX_ID, BOX_SIZE, GRASP_LINK,
     FINGER_LINKS, EXPECTED_BOX_Z, GROUND_Z, FRONT_CAM_Z, MAX_REACH_X,
     zdown_quat)
 from pickplace_arm_bringup.search_and_pick import (
     APPROACH_LINEAR_GAIN, APPROACH_LINEAR_MAX, APPROACH_LINEAR_MIN,
     APPROACH_ANGULAR_GAIN, APPROACH_ANGULAR_MAX)
+# Aliased on import, every one of them: this module already defines module-level
+# TABLE_APPROACH, COLUMNS and FINAL_POSE for the WAREHOUSE layout, further down
+# the file. An unaliased import would be silently overwritten by those a few
+# lines later and Mission2Hospital would quietly inherit the warehouse's
+# coordinates -- i.e. drive to (1.30, 0.00) in a hospital.
+from pickplace_arm_bringup.hospital_pickplace_layout import (
+    COLUMNS as HOSP_COLUMNS,
+    FINAL_POSE as HOSP_FINAL_POSE,
+    PLACE_APPROACH_DIR as HOSP_PLACE_APPROACH_DIR,
+    RACKS as HOSP_RACKS,
+    RACK_GRIP_HEIGHT as HOSP_RACK_GRIP_HEIGHT,
+    TABLE_APPROACH as HOSP_TABLE_APPROACH,
+    TABLE_TOP as HOSP_TABLE_TOP)
 
 # --- layout (map frame) -------------------------------------------------------
 #
@@ -214,6 +227,33 @@ class Mission2(Mission):
     # COLUMN_X_OFFSET, i.e. the column centre at the normal stop; verified
     # reachable for all three column heights.
     COLUMN_PLACE_X = COLUMN_STOP_X + COLUMN_X_OFFSET
+    # Height of the grasped feature's CENTRE above the payload's own underside;
+    # see PickAndPlace.PAYLOAD_GRIP_HEIGHT. It is what turns a column's top
+    # height into a fingertip z, so it appears on both sides of the mission:
+    # picking off the table and placing onto a column.
+    #
+    # For a cube it is simply half the cube, which is why this used to be
+    # written inline as BOX_SIZE / 2.0. It stops being half of anything as soon
+    # as the payload is not a cube: a sample rack is grasped by a block on a
+    # gantry 0.17 m above its tray, so a placement computed as BOX_SIZE / 2.0
+    # would drive the rack 0.14 m THROUGH the column it was meant to stand on.
+    PAYLOAD_GRIP_HEIGHT = BOX_SIZE / 2.0
+    # Where the grasped feature reads (base_link z) with the payload sitting on
+    # the FLOOR. _placement_landed compares against this to tell "on the column"
+    # from "dropped beside it".
+    PAYLOAD_FLOOR_Z = EXPECTED_BOX_Z
+    # Unit vector from the placement target to the standoff the base is sent to,
+    # i.e. which SIDE the column is approached from, in the MAP frame. Yaw is
+    # derived from it, so the base always arrives facing the column.
+    #
+    # (1, 0) reproduces the warehouse exactly: its columns are approached from
+    # +x facing -x, because the robot comes from the table on that side. It was
+    # hardcoded as col_x + NAV_STANDOFF with yaw = pi, which silently assumed
+    # every world lays the table and the columns out along the map's x axis. A
+    # world where the same layout is rotated -- the hospital lobby runs
+    # north-south -- needs the approach side rotated with it, or the base is
+    # sent to a standoff 90 degrees round from the one the layout intends.
+    PLACE_APPROACH_DIR = (1.0, 0.0)
 
     def __init__(self):
         super().__init__()
@@ -435,7 +475,7 @@ class Mission2(Mission):
         # is measured from the floor, so it has to be lifted into the base_link
         # frame; the box centre then sits half a box above the column top, and
         # the fingertip frame is at the box centre.
-        top_z = GROUND_Z + height + BOX_SIZE / 2.0
+        top_z = GROUND_Z + height + self.PAYLOAD_GRIP_HEIGHT
         # The over-column waypoint must clear the column TOP. The held box now
         # hangs ~BOX_SIZE/2 below the fingertip frame, NOT the ~0.08 m it hung
         # below gripper_base, so the clearance term below shrank accordingly.
@@ -564,8 +604,16 @@ class Mission2(Mission):
         # the camera actually locked onto was the top 2 cm of the blue column.
         # Starting 5 mm above the top excludes the pillar entirely, so any
         # detection inside the gate really is the box.
-        lo = height + 0.005 - FRONT_CAM_Z
-        hi = height + BOX_SIZE + 0.02 - FRONT_CAM_Z
+        # The gate is centred on where the grasped feature must END UP, i.e.
+        # PAYLOAD_GRIP_HEIGHT above the column top, and still starts above the
+        # column top so a same-coloured pillar cannot creep into the blob. For a
+        # cube the two coincide (the feature IS the box) and this is the
+        # original height+0.005 .. height+BOX_SIZE+0.02 band; for a payload
+        # whose colour sits high on a gantry the band follows it up instead of
+        # staring at the empty air just above the column.
+        mark_z = height + self.PAYLOAD_GRIP_HEIGHT
+        lo = max(height + 0.005, mark_z - BOX_SIZE) - FRONT_CAM_Z
+        hi = mark_z + BOX_SIZE - FRONT_CAM_Z
         gate = (0.05, 1.5, -0.6, 0.6, lo, hi)
         det = self.detect_box_front(timeout_sec=2.0, color=color, gate=gate)
         if det is None:
@@ -573,8 +621,8 @@ class Mission2(Mission):
                       f'after release -- it is not on the column. FAILED.')
             return False
         bz = det[2]
-        floor_z = EXPECTED_BOX_Z
-        placed_z = EXPECTED_BOX_Z + height
+        floor_z = self.PAYLOAD_FLOOR_Z
+        placed_z = self.PAYLOAD_FLOOR_Z + height
         if bz < (floor_z + placed_z) / 2.0:
             log.error(f'[place] {color} box is at z={bz:.3f} -- that is floor '
                       f'level (~{floor_z:.3f}), not column {tag_id} top '
@@ -621,8 +669,9 @@ class Mission2(Mission):
             self._drive_blind(-0.18, 3.5)
             self._stop_base()
 
-            # 2) drive to a standoff in front of the column (facing it, yaw=pi
-            # since the robot approaches from the +x table side), then visually
+            # 2) drive to a standoff in front of the column, on the side
+            # PLACE_APPROACH_DIR names (the +x table side by default), facing
+            # it -- the yaw falls out of that vector -- then visually
             # centre the base on it (front camera) and place the box on top.
             # Tighten Nav2's own arrival heading just for this goal:
             # approach_column's heading correction (_face_box) is capped at
@@ -631,7 +680,10 @@ class Mission2(Mission):
             # camera's view entirely (confirmed live). Restored right after so
             # the looser default (which avoids skid-steer oscillation) still
             # applies to every other goal.
-            approach = (col_xy[0] + NAV_STANDOFF, col_xy[1], math.pi)
+            adx, ady = self.PLACE_APPROACH_DIR
+            approach = (col_xy[0] + adx * NAV_STANDOFF,
+                        col_xy[1] + ady * NAV_STANDOFF,
+                        math.atan2(-ady, -adx))
             self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
             nav_ok = self.navigate_to(self.make_map_goal(*approach))
             self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
@@ -742,6 +794,95 @@ class Mission2Tugbot(Mission2):
         return super().detect_box_front(timeout_sec, debug_save, color, gate)
 
 
+
+class Mission2Hospital(Mission2):
+    """The same run as Mission2Tugbot, in the AWS hospital, carrying racks.
+
+    NOTHING ABOUT THE SEQUENCE CHANGES. Drive to the table, pick payload i by
+    colour, drive to column i, centre the base on it, place, repeat, park. Only
+    three things differ from the warehouse, and each of them is data rather than
+    behaviour:
+
+      WHERE.    hospital_pickplace_layout drops the warehouse's own relative
+                layout -- table 2.30 m ahead, columns 1.0 m behind -- into the
+                lobby, rotated to face north. Because the arrangement is moved
+                rigidly, every distance the mission was tuned on (CLAW_STOP_X,
+                NAV_STANDOFF, COLUMN_STOP_X, the yaw tolerances) still describes
+                the same geometry and none of it is retuned here.
+
+      WHAT.     Sample racks instead of coloured boxes. The grip block is the
+                same 0.06 m cube in the same three colours, so the detector, the
+                jaw opening and the grasp verification are untouched -- but it
+                sits 0.170 m up the rack's own body instead of at its centre,
+                which is what PAYLOAD_GRIP_HEIGHT below re-derives every height
+                from.
+
+      WHICH.    GRASP_MODELS points the DetachableJoint topics at rack_<colour>
+                rather than box_<colour>.
+
+    THE 0.170 IS NOT COSMETIC AND IT IS NOT LOCAL TO THE PLACEMENT. It moves the
+    table grasp height, the column placement height, the placement-verification
+    gate, the lift that has to break contact before the weld, and -- most easily
+    missed -- the CARRY height: at the box's carry pose a rack's tray rides in
+    the LIDAR's scan plane, the robot reads its own payload as a wall dead
+    ahead, and Nav2 aborts every goal after the pick while the identical drive
+    before the pick worked. See carry_height() in pick_and_place.py.
+    """
+    # --- what is carried ------------------------------------------------------
+    GRASP_MODELS = {c: f'rack_{c}' for c in BOX_COLORS}
+    PAYLOAD_GRIP_HEIGHT = HOSP_RACK_GRIP_HEIGHT
+    # A rack standing on the FLOOR reads its grip block this high, which is what
+    # _placement_landed compares against to tell "on the column" from "dropped
+    # beside it". For a box that was EXPECTED_BOX_Z (half a cube up); for a rack
+    # it is the full gantry height, and using the box value here would call
+    # every successful placement a floor drop.
+    PAYLOAD_FLOOR_Z = GROUND_Z + HOSP_RACK_GRIP_HEIGHT
+
+    # --- where it happens -----------------------------------------------------
+    LAYOUT_TABLE_APPROACH = HOSP_TABLE_APPROACH
+    # Fingertip z to grasp a rack standing on the table: the grip block's
+    # centre, i.e. the table top plus the gantry height. (For a box this was the
+    # table top plus half a cube.)
+    LAYOUT_TABLE_GRASP_Z = GROUND_Z + HOSP_TABLE_TOP + HOSP_RACK_GRIP_HEIGHT
+    # Unchanged from the warehouse, and it does not need re-measuring: the
+    # camera reads the near FACE and the jaws have to reach the CENTRE, and the
+    # grip block is the same 0.06 cube the boxes were, so the correction is the
+    # same half-width.
+    LAYOUT_TABLE_X_OFFSET = TABLE_X_OFFSET
+    LAYOUT_BOXES = HOSP_RACKS
+    LAYOUT_COLUMNS = HOSP_COLUMNS
+    LAYOUT_FINAL_POSE = HOSP_FINAL_POSE
+    PLACE_APPROACH_DIR = HOSP_PLACE_APPROACH_DIR
+
+    # --- rejecting the building -----------------------------------------------
+    #
+    # The hospital is a furnished, colourful place -- red exit signage, green
+    # scrubs, blue chairs and a patterned carpet -- so every colour detection is
+    # gated to dead-ahead, close and low, exactly as the Tugbot warehouse needs
+    # for its pallet labels and hazard tape.
+    #
+    # The z band is in the CAMERA frame and the lens sits FRONT_CAM_Z = 0.223 m
+    # off the floor, so a world height converts as (height - 0.223). What has to
+    # stay inside:
+    #   grip block on the 0.30 m table, centre 0.470   ->  cam z +0.247
+    #   column bodies, floor 0.00 to 0.50              ->  cam z -0.223 .. +0.277
+    # and, just as importantly, WHAT HAS TO STAY OUT: the rack the robot is
+    # already carrying. It rides at carry_height(0.170) = 0.787 m, i.e. cam z
+    # +0.564, and it is 0.50 m dead ahead in the camera's own line of sight. The
+    # colour it carries is the SAME colour the column servo is hunting for, so
+    # without an upper bound below it the robot would lock onto its own payload
+    # and drive at it. 0.32 clears the tallest column by 0.043 and the carried
+    # payload by 0.244.
+    HOSPITAL_GATE = (0.05, 2.5, -0.7, 0.7, -0.25, 0.32)
+    COLUMN_DETECT_GATE = HOSPITAL_GATE
+
+    def detect_box_front(self, timeout_sec=2.0, debug_save=False, color='blue',
+                         gate=None):
+        if gate is None:
+            gate = self.HOSPITAL_GATE
+        return super().detect_box_front(timeout_sec, debug_save, color, gate)
+
+
 def _run(node_cls):
     rclpy.init()
     node = node_cls()
@@ -775,6 +916,10 @@ def _run(node_cls):
 
 def main_tugbot():
     _run(Mission2Tugbot)
+
+
+def main_hospital():
+    _run(Mission2Hospital)
 
 
 if __name__ == '__main__':

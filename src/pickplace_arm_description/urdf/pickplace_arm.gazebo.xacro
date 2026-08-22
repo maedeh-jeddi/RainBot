@@ -159,23 +159,31 @@
        That makes the startup detach in PickAndPlace.__init__ load-bearing,
        NOT a nicety: without it the robot tows all three boxes off the table
        the moment it drives to the pick. -->
-  <xacro:macro name="box_attach" params="color">
+  <xacro:macro name="grasp_attach" params="model">
     <gazebo>
       <plugin filename="gz-sim-detachable-joint-system"
               name="gz::sim::systems::DetachableJoint">
         <parent_link>fr3_link7</parent_link>
-        <child_model>box_${color}</child_model>
+        <child_model>${model}</child_model>
         <child_link>link</child_link>
-        <attach_topic>/box_${color}/attach</attach_topic>
-        <detach_topic>/box_${color}/detach</detach_topic>
-        <output_topic>/box_${color}/attach_state</output_topic>
+        <attach_topic>/${model}/attach</attach_topic>
+        <detach_topic>/${model}/detach</detach_topic>
+        <output_topic>/${model}/attach_state</output_topic>
         <suppress_child_warning>true</suppress_child_warning>
       </plugin>
     </gazebo>
   </xacro:macro>
-  <xacro:box_attach color="red"/>
-  <xacro:box_attach color="green"/>
-  <xacro:box_attach color="blue"/>
+  <!-- The coloured boxes of the warehouse run. -->
+  <xacro:grasp_attach model="box_red"/>
+  <xacro:grasp_attach model="box_green"/>
+  <xacro:grasp_attach model="box_blue"/>
+  <!-- The sample racks of the hospital run. Declared unconditionally, exactly
+       like the boxes: suppress_child_warning is what makes a plugin whose child
+       model does not exist in this world harmless, so one robot description
+       serves both missions rather than needing a world-dependent URDF. -->
+  <xacro:grasp_attach model="rack_red"/>
+  <xacro:grasp_attach model="rack_green"/>
+  <xacro:grasp_attach model="rack_blue"/>
 
   <!-- High friction + soft contact on the finger pads so the gripper can
        actually hold a box by friction in Gazebo Harmonic. Raised 3.5 -> 5.0

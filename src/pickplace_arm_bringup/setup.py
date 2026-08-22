@@ -33,10 +33,19 @@ setup(
             # class is the end of an inheritance chain --
             #   PickAndPlace -> SearchAndPick -> NavAndPick -> Mission
             #                -> Mission2 -> Mission2Tugbot
+            #                            -> Mission2Hospital
             # so pick_and_place.py, search_and_pick.py, nav_and_pick.py,
             # mission.py and mission_2.py are all still imported at runtime.
             # They simply no longer have entry points of their own.
             'mission_pickPlace = pickplace_arm_bringup.mission_2:main_tugbot',
+            # The same mission in the AWS hospital, carrying sample racks
+            # instead of boxes: Mission2Hospital is Mission2Tugbot's sibling,
+            # differing only in layout, payload and colour gate.
+            'mission_rackPlace = pickplace_arm_bringup.mission_2:main_hospital',
+            # Regenerates maps/aws_hospital.{pgm,yaml} from aws_hospital.sdf's
+            # own collision geometry. Not part of any launch -- run it by hand
+            # after changing the world, or the map and the building disagree.
+            'aws_hospital_map = pickplace_arm_bringup.aws_hospital_map:main',
             # Manual driving, used when building a map with mapping.launch.py.
             'teleop_key = pickplace_arm_bringup.teleop_key:main',
             # Startup readiness gate used by mission_pickPlace.launch.py.
