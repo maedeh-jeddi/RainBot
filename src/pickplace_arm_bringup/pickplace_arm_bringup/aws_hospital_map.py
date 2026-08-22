@@ -38,6 +38,8 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from scipy import ndimage
 
+from pickplace_arm_bringup.rack_table_layout import STATIC_TABLES, TABLE_SPAWN_Z
+
 # LIDAR height above the floor: base_link at 0.13228 + lidar_link at 0.3144.
 Z_LIDAR = 0.4466
 RES = 0.05
@@ -335,6 +337,49 @@ def main():
                 hits += 1
         return hits
 
+    def stamp_footprint(tris):
+        """Stamp a prop's whole FOOTPRINT, not a slice through it.
+
+        stamp() above cuts the geometry at the LIDAR's height, which is right
+        for everything the sensor can see and useless for anything shorter than
+        it. A 0.3238 m table crosses no plane at 0.4466 m, so slicing it stamps
+        precisely nothing -- which is what the first version of this did, and
+        the map came out byte-identical to one with no tables in it at all.
+
+        What the planner needs is the floor area the prop denies it, so this
+        projects every collision vertex down, takes the convex hull and fills
+        it. The hull over-approximates a table with legs by including the air
+        between them; that is the CONSERVATIVE direction and it is also simply
+        true here, because a Husky is far too tall to drive under a coffee
+        table.
+        """
+        pts = tris.reshape(-1, 3)[:, :2]
+        if len(pts) < 3:
+            return
+        try:
+            from scipy.spatial import ConvexHull
+            hull = pts[ConvexHull(pts).vertices]
+        except Exception:
+            return
+        jj = ((hull[:, 0] - X0) / RES)
+        ii = ((hull[:, 1] - Y0) / RES)
+        i0, i1 = int(np.floor(ii.min())), int(np.ceil(ii.max()))
+        j0, j1 = int(np.floor(jj.min())), int(np.ceil(jj.max()))
+        i0, i1 = max(i0, 0), min(i1, H - 1)
+        j0, j1 = max(j0, 0), min(j1, W - 1)
+        if i1 < i0 or j1 < j0:
+            return
+        gi, gj = np.mgrid[i0:i1 + 1, j0:j1 + 1]
+        inside = np.ones(gi.shape, bool)
+        n = len(hull)
+        for k in range(n):
+            aj, ai = jj[k], ii[k]
+            bj, bi = jj[(k + 1) % n], ii[(k + 1) % n]
+            # ConvexHull returns vertices counter-clockwise, so "inside" is the
+            # left of every edge.
+            inside &= ((bj - aj) * (gi - ai) - (bi - ai) * (gj - aj)) >= -1e-9
+        occ[i0:i1 + 1, j0:j1 + 1] |= inside
+
     cache, missing, empty = {}, [], []
     for inc in w.findall('include'):
         uri = (inc.findtext('uri') or '').strip()
@@ -354,29 +399,51 @@ def main():
             + T[:3, 3]
         stamp(world_tris)
 
-    # NOTHING THE MISSION SPAWNS IS STAMPED IN HERE, AND THAT IS DELIBERATE.
+    # THE FOUR RACK TABLES GO IN. THE RACKS THEMSELVES DO NOT.
     #
-    # The map is what the world file describes, sliced at the LIDAR height, and
-    # nothing else. The pick-and-place props - the table, the three columns and
-    # the three racks - are spawned by the mission launch and are all PAYLOAD or
-    # scenery for the arm, not building:
+    # The split is between what is permanently part of the room and what is
+    # payload:
     #
-    #   table    top at 0.30 m       below the 0.4466 m scan plane
-    #   columns  0.30 / 0.40 / 0.50  only the tallest breaks the plane, by 5 cm
-    #   racks    carried away        a map obstacle that moves is worse than none
+    #   rack tables  never move          ->  stamped, so the planner routes round
+    #   racks        carried away        ->  NOT stamped; a map obstacle where a
+    #                                        prop no longer is, is worse than one
+    #                                        that was never drawn
     #
-    # So a LIDAR would not see most of them even if they were here, and AMCL
-    # matches against this map with the same LIDAR - stamping something the scan
-    # cannot return would bias the pose estimate rather than help the planner.
-    # This is the same split tugbot_warehouse uses: its map was built by SLAM
-    # with the props absent, and the mission drives between them on the local
-    # costmap alone.
+    # STAMPING THE TABLES IS A TRADE-OFF AND IT IS WORTH BEING EXPLICIT ABOUT IT.
+    # A table top at 0.3238 m is BELOW the LIDAR's 0.4466 m scan plane, so the
+    # sensor can never return a point on one, and this file otherwise slices at
+    # exactly that plane. Stamping them therefore puts occupied cells in the map
+    # that no measurement will ever support.
     #
-    # If a LATER step puts a bench or a parked robot in this world - something
-    # tall, solid and permanent - it does have to be stamped here, or the global
-    # planner routes straight through it. See v1-devel-clone's
-    # hospital_aws_layout.STATIC_PROPS and parked_robots() for how that was
-    # done, and for the debugging sessions that paid for the lesson.
+    # It is still right, because the costmaps have NO OTHER OBSTACLE SOURCE --
+    # nav2_params.yaml gives them that same LIDAR and nothing else. A table left
+    # out of the map is invisible to the global planner and to the local costmap
+    # alike, and the robot drives into it. The delivery table stands in the
+    # lobby, which is the hub every robot crosses to get anywhere, so it would be
+    # hit. This project has already paid for that lesson twice, with the nurses'
+    # station and with a delivery bench.
+    #
+    # The cost to AMCL is bounded: likelihood_field scores each scan ENDPOINT
+    # against the nearest occupied cell, so extra occupied cells can only shrink
+    # a real endpoint's nearest-neighbour distance a little. They cannot invent
+    # returns. Four tables of about 0.9 m2 each in a 1200 m2 building is a small
+    # perturbation, and it was measured before and after rather than assumed.
+    #
+    # Poses come from rack_table_layout, which the spawning launch reads too --
+    # a table stamped somewhere the launch does not put one is exactly the bug
+    # this shares a source of truth to avoid.
+    for tx, ty, tyaw in STATIC_TABLES:
+        path = _resolve('model://rack_table', search)
+        if path is None:
+            missing.append('rack_table')
+            break
+        tris = collision_triangles(path)
+        if len(tris) == 0:
+            empty.append('rack_table')
+            break
+        T = _pose('%f %f %f 0 0 %f' % (tx, ty, TABLE_SPAWN_Z, tyaw))
+        stamp_footprint(
+            (T[:3, :3] @ tris.reshape(-1, 3).T).T.reshape(-1, 3, 3) + T[:3, 3])
 
     # The building shell is a <model>, not an <include>, in some worlds; here it
     # comes in as includes too, so nothing extra is needed. Seal the outer
