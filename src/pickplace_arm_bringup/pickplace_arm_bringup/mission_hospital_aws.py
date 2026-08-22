@@ -79,16 +79,47 @@ class MissionHospitalAws(Mission2):
     # swung 55 degrees put the chassis up on that shelf twice.
     BACK_OFF_VIA_NAV = True
 
-    # Stop 0.12 m further out than a box pick would, because that is how far
-    # lab_bench's transfer shelf sticks out past the rack standing on it:
-    # the shelf slab runs from local x -0.35 to -0.65 and the rack sits at
-    # -0.53. Measured off models/lab_bench/model.sdf, not estimated.
+    # Stop further out than a box pick would, because lab_bench's transfer shelf
+    # sticks out past the rack standing on it: the shelf slab runs from local
+    # x -0.35 to -0.65 and the rack sits at -0.53, so 0.12 m of it is between
+    # the robot and the payload. Measured off models/lab_bench/model.sdf, not
+    # estimated. Stopping 0.75 m from the rack therefore leaves the bumper
+    # (base_link x = 0.494) only 0.136 m off a 0.30 m shelf edge, against a
+    # 0.165 m wheel, and the chassis rides up onto it - measured twice.
     #
-    # The bumper then clears the shelf edge by 0.256 m instead of 0.136 m, and
-    # the arm still reaches: the grasp point ends up 0.795 m from fr3_link0,
-    # inside the FR3's 0.855 m envelope.
+    # BUT 0.75 + 0.12 = 0.87 IS TOO FAR TO GRASP FROM, AND THAT WENT UNNOTICED
+    # BECAUSE THE FAILURE IS SILENT. The camera reads the grip block's near
+    # FACE, and the jaws have to reach its CENTRE, half a block (0.030) further:
+    #
+    #     stop 0.87  ->  grasp wants 0.900  ->  MAX_REACH_X caps it at 0.850
+    #
+    # so every pick closed 0.05 m short of centre on a 0.06 m block - i.e. on
+    # its front edge. Three runs out of three did exactly this, and all three
+    # reported a good grasp, because the finger-gap check only asks whether
+    # something is between the jaws, not where. The visible symptom was the rack
+    # riding at 14 degrees of pitch (ground truth rpy 0.008, 0.2455, 0.296),
+    # which is what being carried by one edge looks like.
+    #
+    # The old note here claimed "the arm still reaches: the grasp point ends up
+    # 0.795 m from fr3_link0". That arithmetic was done against the stop
+    # distance rather than the grasp point: 0.900 in base_link is 0.820 from
+    # fr3_link0 at x = 0.08, which is 96% of the FR3's 0.855 m envelope -
+    # near-singular, and past the x = 0.85 that /compute_ik was actually swept
+    # to. Raising MAX_REACH_X to cover it would be reaching into that corner.
+    #
+    # So the base stops closer instead, by exactly enough that the grasp lands
+    # inside the verified envelope with headroom rather than on the cap:
+    #
+    #     stop 0.80  ->  grasp 0.830        (0.02 m below MAX_REACH_X)
+    #     shelf edge at 0.80 - 0.12 = 0.68  (bumper clears it by 0.186 m)
+    #
+    # That is 0.05 m less bumper clearance than 0.87 gave and 0.05 m MORE than
+    # the 0.136 m that actually failed - and unlike 0.87 it grips the block
+    # through its middle. If the chassis ever touches the shelf again, the lever
+    # to pull is this number, and the constraint it must respect is
+    # CLAW_STOP_X + LAYOUT_TABLE_X_OFFSET <= MAX_REACH_X.
     PAYLOAD_SHELF_OVERHANG = 0.12
-    CLAW_STOP_X = 0.75 + PAYLOAD_SHELF_OVERHANG
+    CLAW_STOP_X = 0.80
 
     # The rack is detected by its near face while the jaws reach its centre; the
     # grip block is the same 0.06 m cube the boxes present, so the inherited

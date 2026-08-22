@@ -230,8 +230,9 @@
        without excessive slip. Link names come from the A200 macro. -->
   <xacro:macro name="wheel_friction" params="link">
     <gazebo reference="${link}">
-      <mu1>1.0</mu1>
-      <mu2>1.0</mu2>
+      <mu1>4.0</mu1>
+      <mu2>0.2</mu2>
+      <fdir1>1 0 0</fdir1>
       <kp>1e6</kp>
       <kd>1.0</kd>
       <minDepth>0.001</minDepth>
@@ -324,7 +325,32 @@
         </scan>
         <range>
           <min>0.12</min>
-          <max>8.0</max>
+          <!-- 25 m, NOT 8. THE OLD 8 WAS SHORTER THAN THE BUILDING.
+               The AWS hospital's north-south corridor is a 40.8 m straight run
+               of parallel wall (measured off this package's own map, y -25.95
+               to 14.85 along x = 4.5). A sensor that reaches 8 m into it sees
+               two walls and nothing else, and sees exactly the same two walls
+               from anywhere in the middle 25 m of it - so the scan carries no
+               information at all about position ALONG the corridor, which is
+               the one axis that matters there.
+               That is what was breaking localisation, and it was breaking it in
+               a way no amount of filter tuning could reach: alpha1-4,
+               recovery_alpha_* and the z_hit/z_rand pairing were each tried and
+               each failed, because all three are downstream of information the
+               sensor never delivered. Measured on the failing run, with
+               odometry perfectly healthy (d_odom 4.299 against d_truth 4.296 -
+               the wheels were NOT slipping): the robot travelled 4.3 m down
+               that corridor while AMCL's belief advanced 0.33 m, ending 4.6 m
+               behind the truth.
+               25 m puts both ends of that corridor in view from most of its
+               length, which is precisely the measurement that pins position
+               along the axis. It is also a real device spec rather than an
+               invented one - a SICK TiM781 reaches 25 m where the TiM551 this
+               was modelled on reaches 10 - so the sensor stays plausible.
+               amcl_tugbot.yaml's laser_max_range MUST be raised to match: AMCL
+               discards returns beyond its own limit, so leaving it at 8 would
+               throw away exactly the beams this change exists to provide. -->
+          <max>25.0</max>
           <resolution>0.01</resolution>
         </range>
         <noise>

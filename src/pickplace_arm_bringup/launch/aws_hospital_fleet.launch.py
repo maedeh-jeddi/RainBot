@@ -52,6 +52,49 @@ ROBOTS = [
     ('r4', 0.0, 9.25, 1.5707963),
 ]
 
+# --- bringing it up faster while developing ----------------------------------
+#
+# EVERY DELAY BELOW IS THERE BECAUSE SOMETHING FAILED WITHOUT IT, so none of
+# them change by default: with no environment set, this file behaves exactly as
+# it did. What the overrides buy is iteration speed, and the measured budget
+# says where the time actually goes - launch to the mission's first Nav2 goal is
+# 150 s, identical across runs, spent as
+#
+#   ~45 s  SPAWN_SETTLE before the first robot is inserted
+#    36 s  SPAWN_STAGGER, 12 s for each robot after the first
+#   ~20 s  the controller chains finishing
+#    45 s  NAV_SETTLE before the first navigation stack
+#   ~24 s  lifecycle bring-up and the mission's own gates
+#
+# FLEET_ROBOTS is the biggest single lever and the safest. r3 and r4 never
+# navigate and never manipulate - they are furniture that happens to be a robot
+# - so a run that only exercises r1 and r2 does not need them inserted at all,
+# and dropping them removes 24 s of stagger plus their share of the contention
+# the stagger exists to spread. They stay in the MAP either way (see
+# parked_robots in hospital_aws_layout), so the planner still routes around
+# where they would have been, which is the conservative direction to be wrong in.
+#
+# FLEET_NAV_SETTLE is the next one. That 45 s is a fixed guess sitting on top of
+# a condition that is already implemented and already waited on - the
+# change_state gate below waits for each robot's services to exist AND for the
+# previous robot's navigate_to_pose to be serving. With two robots the gate does
+# the whole job, so the constant is mostly redundant; with four it is still
+# earning its keep, which is why it is not simply deleted.
+#
+#   FLEET_ROBOTS=r1,r2 FLEET_NAV_SETTLE=0 FLEET_SPAWN_SETTLE=30 \
+#     ros2 launch pickplace_arm_bringup mission_hospital_relay.launch.py
+#
+# brings the first Nav2 goal in at roughly 90 s instead of 150.
+_want = os.environ.get('FLEET_ROBOTS')
+if _want:
+    _keep = [n.strip() for n in _want.split(',') if n.strip()]
+    _known = {n for n, *_ in ROBOTS}
+    _unknown = [n for n in _keep if n not in _known]
+    if _unknown:
+        raise RuntimeError(
+            f'FLEET_ROBOTS names {_unknown} which are not in ROBOTS {sorted(_known)}')
+    ROBOTS = [r for r in ROBOTS if r[0] in _keep]
+
 # WHICH ROBOTS GET A move_group. Every robot carries an FR3, but move_group is
 # by far the heaviest node per robot and this machine cannot run four of them.
 # Measured: with all four, the one-minute load average reached 71.8 and the
@@ -97,12 +140,13 @@ WORLD_ENTITY = 'aws_hospital'
 # the rest of the run. Raising the spawner timeout alone did not fix it, because
 # the problem is contention rather than a slow answer. Offsetting each robot by
 # a few seconds spreads both the Gazebo insertion and the controller bring-up.
-SPAWN_SETTLE = 45
-SPAWN_STAGGER = 12
-# Seconds to let a robot's Nav2 servers construct before its lifecycle manager
-# tries to configure them, and seconds between one robot's stack and the next.
-LIFECYCLE_SETTLE = 15
-NAV_STAGGER = 25
+SPAWN_SETTLE = int(os.environ.get('FLEET_SPAWN_SETTLE', 45))
+SPAWN_STAGGER = int(os.environ.get('FLEET_SPAWN_STAGGER', 12))
+# Seconds between one robot's Nav2 stack and the next. How long a robot's own
+# servers need before its lifecycle manager may touch them is deliberately NOT a
+# constant any more - see the change_state gate below, which waits on the
+# services themselves rather than guessing at a duration.
+NAV_STAGGER = int(os.environ.get('FLEET_NAV_STAGGER', 25))
 # EVERY ROBOT WAITS, INCLUDING THE FIRST. The stagger alone was idx * NAV_STAGGER,
 # which gives robot zero no delay at all - and robot zero was the one that kept
 # failing while its staggered siblings came up clean. Observed directly: r2
@@ -111,7 +155,7 @@ NAV_STAGGER = 25
 # and not starvation. r1's controllers finish first, so its Nav2 bring-up starts
 # while r3 and r4 are still being inserted into Gazebo and claiming controllers
 # of their own. NAV_SETTLE pushes the first stack past the last spawn.
-NAV_SETTLE = 45
+NAV_SETTLE = int(os.environ.get('FLEET_NAV_SETTLE', 45))
 NAV_NODES = ['controller_server', 'smoother_server', 'planner_server',
              'behavior_server', 'bt_navigator']
 
@@ -119,10 +163,15 @@ NAV_NODES = ['controller_server', 'smoother_server', 'planner_server',
 def generate_launch_description():
     """A fleet of independently navigating robots in the AWS hospital.
 
-    STAGES 1 AND 2 of multi-robot support. Each robot gets its own sensor
-    topics, TF tree, controller_manager, EKF, AMCL and full Nav2 stack; they
-    share one map_server and one map frame. Still to come: the sample-transport
-    mission (stage 3-4) and the robot-to-robot handover (stage 5).
+    STAGES 1 AND 2 of multi-robot support, and the base every later stage runs
+    on. Each robot gets its own sensor topics, TF tree, controller_manager, EKF,
+    AMCL and full Nav2 stack; they share one map_server and one map frame.
+
+    The stages above this one are missions, not infrastructure, and they live in
+    their own launch files: mission_hospital_aws.launch.py runs the whole
+    sample-transport route with one robot (stages 3-4), and
+    mission_hospital_relay.launch.py splits that same route across two with a
+    handover in the middle (stage 5). Both include THIS file unchanged.
 
     COST PER ROBOT. A full Nav2 stack is five nodes, plus AMCL, an EKF, a
     robot_state_publisher and four controller spawners - so the fleet size in
@@ -179,18 +228,42 @@ def generate_launch_description():
         name='lifecycle_manager_map', output='screen',
         parameters=[sim, {'autostart': True, 'node_names': ['map_server']}])
 
+    # ONLY BRIDGE THE CAMERAS OF ROBOTS THAT ACTUALLY PICK THINGS UP.
+    #
+    # Each robot carries two RGBD cameras publishing 640x480 organised point
+    # clouds at 15 Hz. One such cloud is about 5 MB, so ONE camera is roughly
+    # 75 MB/s, and bridging all four robots' pairs put something like 600 MB/s
+    # through parameter_bridge and DDS. Nothing carries that: the clouds arrive
+    # in bursts with long gaps, and the effect lands on the one thing that needs
+    # them continuously, the visual servo -
+    #
+    #   [detect] no point cloud received before timeout      x7 of 12 tries
+    #   [claw] lost the box -- aborting approach
+    #
+    # It also starves everything sharing the transport, which is why the drive
+    # was sluggish. `ros2 topic hz` could not collect 8 messages in 30 s.
+    #
+    # r3 and r4 never navigate and never manipulate (see NAV_ROBOTS/ARM_ROBOTS)
+    # - they are parked furniture that happens to be a robot - so their cameras
+    # are pure cost. Dropping them halves the load at zero functional cost.
+    # Their scan and imu stay bridged: cheap, and useful for inspection.
     bridge_args = ['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock']
     for ns, _, _, _ in ROBOTS:
         bridge_args += [
             f'/{ns}/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             f'/{ns}/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
-            f'/{ns}/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
-            f'/{ns}/camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
-            f'/{ns}/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-            f'/{ns}/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
-            f'/{ns}/front_camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
-            f'/{ns}/front_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-            f'/{ns}/front_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+        ]
+        if ns in ARM_ROBOTS:
+            bridge_args += [
+                f'/{ns}/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
+                f'/{ns}/camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
+                f'/{ns}/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+                f'/{ns}/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+                f'/{ns}/front_camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
+                f'/{ns}/front_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+                f'/{ns}/front_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            ]
+        bridge_args += [
             # Grasp control, ROS -> gz (']'), prefixed so one robot's gripper
             # cannot weld a prop to the other's.
             f'/{ns}/sample_rack/attach@std_msgs/msg/Empty]gz.msgs.Empty',
@@ -368,25 +441,90 @@ def generate_launch_description():
             # "Configuring planner_server". Different node each time is the
             # signature of contention, not of a broken node.
             #
-            # Two delays fix it, both cheap. LIFECYCLE_SETTLE lets this robot's
-            # own five servers finish constructing before anything tries to
-            # configure them, and NAV_STAGGER keeps the second robot's bring-up
-            # out of the first's way.
-            nav_actions.append(TimerAction(
-                period=float(LIFECYCLE_SETTLE),
-                actions=[Node(
-                    package='nav2_lifecycle_manager',
-                    executable='lifecycle_manager',
-                    name='lifecycle_manager_navigation', namespace=ns,
-                    output='screen',
-                    parameters=[sim, {'autostart': True, 'bond_timeout': 0.0,
-                                      'node_names': ['amcl'] + NAV_NODES}])]))
+            # A FIXED SETTLE WAS THE WRONG SHAPE. LIFECYCLE_SETTLE was 15 s, on
+            # the assumption that the five servers would be constructed by then.
+            # Measured 2026-08-17 they were not: the manager logged "Configuring
+            # controller_server" and stopped there for good, while that server
+            # went on to reach `inactive` by itself moments later. The node was
+            # healthy - the manager had already abandoned it.
+            #
+            # The manager's patience is NOT tunable. Humble's
+            # LifecycleServiceClient hardcodes get_state at 2 s and exposes no
+            # parameter for it, so the only lever left is to not call a node
+            # that is still constructing. Wait for the change_state services
+            # themselves to appear - the condition that actually matters - in
+            # place of a constant that is wrong on any other machine.
+            #
+            # AND WAIT FOR THE PREVIOUS ROBOT'S STACK TO BE SERVING. NAV_STAGGER
+            # alone was not enough, measured 2026-08-17: with r1 fixed and going
+            # first, r2 started its 25 s later into a machine now running r1's
+            # whole Nav2 stack AND both move_groups - load 12.84 - and died at
+            # "Configuring behavior_server". The same failure, one node further
+            # along. The contention did not go away, it moved to whoever goes
+            # second, which is what any purely time-based stagger will keep
+            # doing. So chain on the condition: navigate_to_pose exists only
+            # once the previous robot's bt_navigator is active, which is exactly
+            # "that stack has finished and the machine is quiet again".
+            nav_order = list(NAV_ROBOTS)
+            prev_ns = (nav_order[nav_order.index(ns) - 1]
+                       if nav_order.index(ns) > 0 else None)
+            gate_args = ['--label', f'{ns} nav services', '--timeout', '300'] \
+                + [arg for n in ['amcl'] + NAV_NODES
+                   for arg in ('--service', f'/{ns}/{n}/change_state')]
+            if prev_ns is not None:
+                gate_args += ['--action', f'/{prev_ns}/navigate_to_pose']
+            lifecycle_gate = Node(
+                package='pickplace_arm_bringup', executable='wait_for',
+                name='wait_for_nav_services', namespace=ns, output='screen',
+                parameters=[sim], arguments=gate_args)
+            # AUTOSTART IS OFF AND nav_bringup DRIVES THE LIFECYCLE INSTEAD.
+            #
+            # Neither gate above can fix the real defect: with autostart the
+            # manager makes ONE pass, each change_state call bounded by a 2 s
+            # deadline Humble hardcodes and exposes no parameter for (confirmed
+            # against a live manager - the only params are autostart,
+            # bond_timeout, bond_respawn_max_duration,
+            # attempt_respawn_reconnection, node_names). One slow answer and it
+            # stops for good, having logged nothing, and every time it did so
+            # the abandoned node reached `inactive` by itself moments later.
+            #
+            # Three runs on 2026-08-17 stalled at controller_server, then
+            # behavior_server, then amcl - and on a different robot each time.
+            # Delays only choose the loser. nav_bringup retries, which is the
+            # one thing the manager will not do. See its module docstring.
+            managed = ['amcl'] + NAV_NODES
+            # Registered BEFORE the gate is appended, so the handler is in place
+            # before the process it watches can possibly exit.
+            nav_actions.append(RegisterEventHandler(
+                OnProcessExit(target_action=lifecycle_gate, on_exit=[
+                    Node(
+                        package='nav2_lifecycle_manager',
+                        executable='lifecycle_manager',
+                        name='lifecycle_manager_navigation', namespace=ns,
+                        output='screen',
+                        parameters=[sim, {'autostart': False,
+                                          'bond_timeout': 0.0,
+                                          'node_names': managed}]),
+                    Node(
+                        package='pickplace_arm_bringup', executable='nav_bringup',
+                        name='nav_bringup', namespace=ns, output='screen',
+                        parameters=[sim],
+                        arguments=['--namespace', ns]
+                        + [a for n in managed for a in ('--node', n)]),
+                ])))
+            nav_actions.append(lifecycle_gate)
             # Off the fleet gate rather than this robot's own spawner, so no
-            # stack starts until every robot is up. The per-robot stagger then
-            # keeps the two bring-ups from overlapping each other.
+            # stack starts until every robot is up. NAV_SETTLE then pushes even
+            # the first robot past the last spawn, and NAV_STAGGER keeps the two
+            # bring-ups from overlapping each other.
+            #
+            # NAV_SETTLE HAD BEEN DEFINED, DOCUMENTED, AND NEVER WIRED IN. The
+            # period was idx * NAV_STAGGER, which gives r1 - idx 0 - no delay at
+            # all, and r1 is exactly the robot that kept failing. The fix had
+            # been worked out already; it just never reached the TimerAction.
             actions.append(RegisterEventHandler(
                 OnProcessExit(target_action=fleet_gate, on_exit=[TimerAction(
-                    period=float(idx * NAV_STAGGER),
+                    period=float(NAV_SETTLE + idx * NAV_STAGGER),
                     actions=nav_actions)])))
 
         # MoveIt, one move_group per robot, so any of them can use its arm.
@@ -410,11 +548,24 @@ def generate_launch_description():
                 .robot_description(
                     mappings={'use_gazebo': 'true', 'robot_ns': ns})
                 .to_moveit_configs())
-            actions.append(Node(
-                package='moveit_ros_move_group', executable='move_group',
-                namespace=ns, output='screen',
-                parameters=[moveit_config.to_dict(), sim,
-                            {'trajectory_execution.allowed_start_tolerance': 0.1}]))
+            # HELD BACK TO THE FLEET GATE, LIKE THE NAVIGATION STACK.
+            #
+            # Ungated, this started at t=0 and spent its whole construction
+            # competing with Gazebo streaming 175 models in - two of them, of
+            # the heaviest node in the system, against the one thing that has a
+            # hard 2 s deadline downstream. Load reached 23.95 on 16 cores.
+            #
+            # It starts on the gate with NO extra delay while the Nav2 stacks
+            # wait NAV_SETTLE behind it, so move_group gets the quiet window
+            # between the last spawn and the first lifecycle manager instead of
+            # overlapping either. Nothing needs the arm until the mission runs,
+            # which is much later still.
+            actions.append(RegisterEventHandler(
+                OnProcessExit(target_action=fleet_gate, on_exit=[Node(
+                    package='moveit_ros_move_group', executable='move_group',
+                    namespace=ns, output='screen',
+                    parameters=[moveit_config.to_dict(), sim,
+                                {'trajectory_execution.allowed_start_tolerance': 0.1}])])))
 
     return LaunchDescription([
         *[AppendEnvironmentVariable('GZ_SIM_RESOURCE_PATH', p) for p in

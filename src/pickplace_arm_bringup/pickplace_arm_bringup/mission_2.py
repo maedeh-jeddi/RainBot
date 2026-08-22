@@ -641,6 +641,113 @@ class Mission2(Mission):
                  f'(target top ~{placed_z:.3f})')
         return True
 
+    # --- the two legs, each usable on its own --------------------------------
+    #
+    # SPLIT OUT SO THE RELAY CAN RUN ONE LEG EACH. run_mission_2 below is these
+    # two called back to back, which is what one robot doing the whole route
+    # IS; mission_hospital_relay gives the collect leg to one robot and the
+    # deliver leg to another, with a handover spliced into the join. Nothing was
+    # retuned in the move - every constant, every tightened tolerance and every
+    # ordering below is the code that already flies, lifted verbatim - because
+    # the whole reason the single-robot route was built first was so that the
+    # relay would be that route cut in half rather than a second implementation.
+
+    def collect_from_table(self, color, box_xy):
+        """Drive to the table approach pose, pick the `color` payload off it,
+        and get clear of the bench. Returns True with the payload held."""
+        log = self.get_logger()
+        # Tighten Nav2's arrival heading here (see TIGHT_YAW_TOLERANCE): an
+        # off-axis arrival biases the front camera's HSV-centroid grasp
+        # reading, which showed up as a real ~3.5cm lateral grasp-centering
+        # error (confirmed via ground-truth Gazebo pose vs the camera's own
+        # detection at grasp time) tracing back to a ~10.5deg arrival heading
+        # error.
+        self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
+        nav_ok = self.navigate_to(self.make_map_goal(*self.LAYOUT_TABLE_APPROACH))
+        self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
+        if not nav_ok:
+            log.error('Table navigation failed -- aborting.')
+            return False
+        box_map = (box_xy[0], box_xy[1])
+        if not self.claw_pick(box_map, color=color,
+                              grasp_z=self.LAYOUT_TABLE_GRASP_Z,
+                              x_offset=self.LAYOUT_TABLE_X_OFFSET):
+            log.error(f'Failed to pick the {color} box -- aborting.')
+            return False
+
+        # Get clear of the table so Nav2 can turn and plan without the bench,
+        # right in front of the robot, tripping its collision check.
+        #
+        # TWO WAYS TO DO THAT, AND THE BLIND ONE IS ONLY SAFE IN AN OPEN ROOM.
+        # _drive_blind reverses along whatever heading the robot happens to
+        # hold, with no costmap and no look behind. After the visual servo and
+        # the grasp that heading is NOT the approach heading any more - measured
+        # 55 degrees off it on the AWS hospital collect - so 0.63 m of blind
+        # reverse goes somewhere nobody checked. There it drove the chassis onto
+        # the bench's own transfer shelf, which stands 0.30 m off the floor
+        # against a 0.165 m wheel: the robot ended up 36 degrees nose-up, 0.15 m
+        # in the air, in a cell with less clearance than its own footprint. Nav2
+        # then had no valid start pose and aborted every goal for the rest of
+        # the run.
+        #
+        # Navigating back to the approach pose instead costs one Nav2 goal and
+        # uses the costmap. That pose is already known good: it is the one the
+        # robot drove to, and it is checked for back-off room when it is chosen
+        # (see hospital_aws_layout).
+        if self.BACK_OFF_VIA_NAV:
+            log.info('[mission2] navigating back to the approach pose')
+            if not self.navigate_to(
+                    self.make_map_goal(*self.LAYOUT_TABLE_APPROACH)):
+                log.warning('[mission2] could not get back to the approach '
+                            'pose -- falling back to a blind reverse')
+                self._drive_blind(-0.18, 3.5)
+                self._stop_base()
+        else:
+            log.info('[mission2] backing off the table')
+            self._drive_blind(-0.18, 3.5)
+            self._stop_base()
+        return True
+
+    def deliver_to_column(self, tag_id, height, col_xy, color):
+        """Carry the held payload to column `tag_id` and place it on top.
+        `color` is the payload's own colour; the target's is TARGET_COLOR."""
+        log = self.get_logger()
+        # Drive to a standoff in front of the column (facing it), then visually
+        # centre the base on it (front camera) and place the payload on top.
+        # Tighten Nav2's own arrival heading just for this goal:
+        # approach_column's heading correction (_face_box) is capped at ~57deg
+        # so it can't recover an arbitrarily bad arrival, and a heading error
+        # beyond that puts the column outside the front camera's view entirely
+        # (confirmed live). Restored right after so the looser default (which
+        # avoids skid-steer oscillation) still applies to every other goal.
+        target_color = self.TARGET_COLOR or color
+        adx, ady = self.PLACE_APPROACH_DIR
+        approach = (col_xy[0] + adx * NAV_STANDOFF,
+                    col_xy[1] + ady * NAV_STANDOFF,
+                    math.atan2(-ady, -adx))
+        self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
+        nav_ok = self.navigate_to(self.make_map_goal(*approach))
+        self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
+        if not nav_ok:
+            log.error(f'Column {tag_id} navigation failed -- aborting.')
+            return False
+        # The box can slip out of the jaws during the drive here (the known
+        # intermittent carry slip), and nothing downstream would notice:
+        # place_on_column servos onto the column, opens an empty gripper and
+        # reports success, and only _placement_landed catches it -- after a
+        # pointless full placement. Seen live in this world: box_red ended up on
+        # the floor mid-route at world (0.74,-0.24), tipped on its side, while
+        # the mission carried on to the column regardless. grasp_is_holding is
+        # just a finger-gap read, so this costs nothing.
+        if not self.grasp_is_holding():
+            log.error(f'{color} box was DROPPED during the carry to column '
+                      f'{tag_id} (gripper is empty on arrival) -- aborting.')
+            return False
+        if not self.place_on_column(tag_id, height, col_xy, target_color):
+            log.error(f'Failed to place on column {tag_id} -- aborting.')
+            return False
+        return True
+
     # --- full mission -------------------------------------------------------
     def run_mission_2(self):
         log = self.get_logger()
@@ -651,94 +758,9 @@ class Mission2(Mission):
         for (color, box_xy), (tag_id, height, col_xy) in zip(self.LAYOUT_BOXES,
                                                              self.LAYOUT_COLUMNS):
             log.info(f'--- {color} box -> column {tag_id} (h={height}) ---')
-
-            # 1) drive to the table and pick the coloured box off it. Tighten
-            # Nav2's arrival heading here too (see TIGHT_YAW_TOLERANCE): an
-            # off-axis arrival biases the front camera's HSV-centroid grasp
-            # reading, which showed up as a real ~3.5cm lateral grasp-
-            # centering error (confirmed via ground-truth Gazebo pose vs the
-            # camera's own detection at grasp time) tracing back to a ~10.5deg
-            # arrival heading error.
-            self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
-            nav_ok = self.navigate_to(self.make_map_goal(*self.LAYOUT_TABLE_APPROACH))
-            self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
-            if not nav_ok:
-                log.error('Table navigation failed -- aborting.')
+            if not self.collect_from_table(color, box_xy):
                 return
-            box_map = (box_xy[0], box_xy[1])
-            if not self.claw_pick(box_map, color=color,
-                                  grasp_z=self.LAYOUT_TABLE_GRASP_Z,
-                                  x_offset=self.LAYOUT_TABLE_X_OFFSET):
-                log.error(f'Failed to pick the {color} box -- aborting.')
-                return
-
-            # Get clear of the table so Nav2 can turn and plan without the
-            # bench, right in front of the robot, tripping its collision check.
-            #
-            # TWO WAYS TO DO THAT, AND THE BLIND ONE IS ONLY SAFE IN AN OPEN
-            # ROOM. _drive_blind reverses along whatever heading the robot
-            # happens to hold, with no costmap and no look behind. After the
-            # visual servo and the grasp that heading is NOT the approach
-            # heading any more - measured 55 degrees off it on the AWS hospital
-            # collect - so 0.63 m of blind reverse goes somewhere nobody
-            # checked. There it drove the chassis onto the bench's own transfer
-            # shelf, which stands 0.30 m off the floor against a 0.165 m wheel:
-            # the robot ended up 36 degrees nose-up, 0.15 m in the air, in a
-            # cell with less clearance than its own footprint. Nav2 then had no
-            # valid start pose and aborted every goal for the rest of the run.
-            #
-            # Navigating back to the approach pose instead costs one Nav2 goal
-            # and uses the costmap. That pose is already known good: it is the
-            # one the robot drove to, and it is checked for back-off room when
-            # it is chosen (see hospital_aws_layout).
-            if self.BACK_OFF_VIA_NAV:
-                log.info('[mission2] navigating back to the approach pose')
-                if not self.navigate_to(
-                        self.make_map_goal(*self.LAYOUT_TABLE_APPROACH)):
-                    log.warning('[mission2] could not get back to the approach '
-                                'pose -- falling back to a blind reverse')
-                    self._drive_blind(-0.18, 3.5)
-                    self._stop_base()
-            else:
-                log.info('[mission2] backing off the table')
-                self._drive_blind(-0.18, 3.5)
-                self._stop_base()
-
-            # 2) drive to a standoff in front of the column (facing it, yaw=pi
-            # since the robot approaches from the +x table side), then visually
-            # centre the base on it (front camera) and place the box on top.
-            # Tighten Nav2's own arrival heading just for this goal:
-            # approach_column's heading correction (_face_box) is capped at
-            # ~57deg so it can't recover an arbitrarily bad arrival, and a
-            # heading error beyond that puts the column outside the front
-            # camera's view entirely (confirmed live). Restored right after so
-            # the looser default (which avoids skid-steer oscillation) still
-            # applies to every other goal.
-            target_color = self.TARGET_COLOR or color
-            adx, ady = self.PLACE_APPROACH_DIR
-            approach = (col_xy[0] + adx * NAV_STANDOFF,
-                        col_xy[1] + ady * NAV_STANDOFF,
-                        math.atan2(-ady, -adx))
-            self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
-            nav_ok = self.navigate_to(self.make_map_goal(*approach))
-            self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
-            if not nav_ok:
-                log.error(f'Column {tag_id} navigation failed -- aborting.')
-                return
-            # The box can slip out of the jaws during the drive here (the known
-            # intermittent carry slip), and nothing downstream would notice:
-            # place_on_column servos onto the column, opens an empty gripper and
-            # reports success, and only _placement_landed catches it -- after a
-            # pointless full placement. Seen live in this world: box_red ended
-            # up on the floor mid-route at world (0.74,-0.24), tipped on its
-            # side, while the mission carried on to the column regardless.
-            # grasp_is_holding is just a finger-gap read, so this costs nothing.
-            if not self.grasp_is_holding():
-                log.error(f'{color} box was DROPPED during the carry to column '
-                          f'{tag_id} (gripper is empty on arrival) -- aborting.')
-                return
-            if not self.place_on_column(tag_id, height, col_xy, target_color):
-                log.error(f'Failed to place on column {tag_id} -- aborting.')
+            if not self.deliver_to_column(tag_id, height, col_xy, color):
                 return
 
         log.info('=== MISSION 2: parking ===')

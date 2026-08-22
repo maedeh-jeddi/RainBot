@@ -89,6 +89,119 @@ DOCK_TOP = 0.38
 HANDOVER_CARRIER = (8.00, -5.28, 1.5707963)     # faces north, at the receiver
 HANDOVER_RECEIVER = (8.00, -3.73, -1.5707963)   # faces south, at the carrier
 
+# WHERE THE RACK CHANGES HANDS: THE FLOOR BETWEEN THEM, NOT JAW TO JAW.
+#
+# The reach window above is what makes this point usable, and it is exactly the
+# midpoint - 0.775 m ahead of each robot's base_link, well inside both arms'
+# envelope (0.727 m from the arm base, against the FR3's 0.855 m reach) and
+# inside MAX_REACH_X = 0.85 for both.
+#
+# THE TRANSFER IS GROUND-TO-GROUND BECAUSE BOTH GRIPPERS POINT STRAIGHT DOWN.
+# Every arm motion in this package holds zdown from pick through carry through
+# place - see the note on fixed wrist orientation in mission_2.py - so two
+# grippers meeting on the same 0.06 m grip block would have to occupy the same
+# space from the same direction. Passing it jaw to jaw needs at least one robot
+# to grasp from the side, which is a new arm envelope, a new IK branch and a new
+# collision problem between two arms that cannot see each other.
+#
+# Setting it down costs one extra lower-and-lift and buys the whole handover out
+# of code paths that are already flown on every run: the carrier's set-down is
+# place_on_column's lower/detach/release/retreat with the target height set to
+# the floor, and the receiver's pick is the ordinary claw pick with grasp_z =
+# PAYLOAD_FLOOR_Z. Neither robot learns anything new.
+#
+# It also removes the tightest timing constraint in the alternative. Held jaw to
+# jaw, the rack is only ever supported by one weld at a time and the window
+# between the receiver welding and the carrier releasing is the whole safety
+# margin. On the floor there is no window: the rack stands on its own tray, and
+# the two robots can take as long as they like.
+HANDOVER_POINT = ((HANDOVER_CARRIER[0] + HANDOVER_RECEIVER[0]) / 2.0,
+                  (HANDOVER_CARRIER[1] + HANDOVER_RECEIVER[1]) / 2.0)
+
+# --- getting there: the carrier's route needs one waypoint --------------------
+#
+# THE MEET POSES ARE FINE. THE ROUTE TO THEM IS NOT, AND ONLY THE RELAY DRIVES
+# IT. The single-robot run goes bench -> dock and never comes this way, so this
+# corridor was never driven until stage 5 existed.
+#
+# WHAT HAPPENS WITHOUT THIS WAYPOINT, twice out of two runs. Leaving the collect
+# bench for HANDOVER_CARRIER, the carrier tracks east along y ~ -27.3, sails
+# past the northward turn, and drives into a dead-end pocket east of it. Ground
+# truth at the stop, from `gz model -p`: (9.025, -26.568) on the first run and
+# (8.906, -26.280) on the second - three identical samples in a row, i.e. not
+# moving. Measured against this package's own map, that pocket profiles as
+#
+#   x  8.5   clearance 0.85 m
+#   x  9.0   clearance 0.35 m     <- where it stops
+#   x  9.5+  clearance 0.00 m     <- wall
+#
+# and 0.35 m is below the Husky's 0.598 m circumscribed radius, so the cell is
+# not navigable. From there Nav2 has no valid start pose and every recovery
+# refuses to run - "Running backup -> Collision Ahead - Exiting DriveOnHeading
+# -> backup failed" - which is the same signature this package already
+# documents for the curtained bed bay. The wheels then spin against the wall,
+# odometry accumulates travel the robot never made, and AMCL follows it: 12.2 m
+# of divergence (truth 9.025,-26.568 against amcl 6.135,-14.725) while the robot
+# stood perfectly still. r2, driving normally at the same moment, was 0.20 m out.
+#
+# WHY THE PLANNER GOES THERE AT ALL. NavFn only refuses LETHAL cells, and
+# nav2_params.yaml sets inflation_radius to 0.36 - just 0.015 m above the 0.345 m
+# inscribed radius Nav2 computes for this footprint. That is deliberate and
+# documented there (0.45 stopped NavFn extracting paths through the 1.5 m
+# doorways), but its cost is that a gap the robot cannot fit through never
+# becomes lethal, so nothing stops a path being drawn into it.
+#
+# AND THE REAL OBSTACLE IS A DOORWAY, WHICH IS WHY THERE ARE TWO WAYPOINTS AND
+# WHY BOTH SIT ON THE SAME LINE.
+#
+# The collect bench stands in an east-west bay closed off to the north by the
+# wall along y = -26.0. There is exactly one way out of that bay toward the
+# lobby: a gap in that wall, measured off this package's own map as running
+#
+#   x 4.70 .. 6.15        i.e. 1.45 m of opening
+#
+# which sounds ample and is not, because clearance is measured to the NEAREST
+# wall in any direction and the gap has jambs on both sides:
+#
+#   x 4.80   clearance 0.15 m        x 5.60   clearance 0.55 m
+#   x 5.00   clearance 0.35 m        x 5.80   clearance 0.35 m
+#   x 5.20   clearance 0.50 m        x 6.00   clearance 0.15 m
+#   x 5.45   clearance 0.75 m   <- the widest line
+#
+# The Husky's circumscribed radius is 0.598 m, so the band where it fits at ANY
+# yaw is only x 5.30 .. 5.55 - a quarter of a metre inside a 1.45 m doorway.
+# Aim anywhere else and the robot has to be near-perfectly square to the gap.
+#
+# WHAT THAT LOOKS LIKE FROM OUTSIDE is a robot that cannot get out of the room.
+# Observed directly: it ran east to x = 4.85, backed off west to x = 1.66, came
+# forward again, over and over, along y ~ -27.4 - up to the doorway and away
+# from it, never through. Nav2's global planner is happy to aim into the gap
+# because inflation_radius is 0.36 (see nav2_params.yaml) and everything from
+# x 5.06 to 5.79 is therefore un-inflated and looks free; the local controller,
+# which checks the true 0.99 x 0.67 m footprint, then refuses at the jamb.
+#
+# THE FIRST WAYPOINT IS AN ALIGNMENT, NOT A DESTINATION. Sending one goal north
+# of the door still lets the robot arrive at the gap crabbed, because nothing
+# constrained where it entered from. Two goals on the SAME x line - one back in
+# the bay, one out the far side - make the traverse a straight run up x = 5.45,
+# and that line clears 0.75 m at its worst point anywhere between y -28.0 and
+# -24.0, i.e. above the circumscribed radius for the whole passage.
+#
+# 5.45 is the measured argmax of clearance across the opening, not the midpoint
+# of the jambs (5.42) and not a number read off a route printout. An earlier
+# version of this used 5.20, taken from an A* route sampled every 2 m, and 5.20
+# is 0.10 m below the circumscribed radius - inside the doorway but not inside
+# the part of it the robot fits through.
+#
+# Sent as ordinary goals before the meet pose rather than through
+# NavigateThroughPoses, so each inherits navigate_to's retries and costmap
+# clearing.
+_DOOR_X = 5.45
+HANDOVER_VIA = [
+    (_DOOR_X, -27.25, 1.5707963),   # in the bay, squared up on the doorway
+    (_DOOR_X, -24.60, 1.5707963),   # through it and clear, still facing north
+]
+
 # --- what belongs in the map --------------------------------------------------
 #
 # The benches and the dock never move, so the global planner must know about
@@ -120,6 +233,18 @@ ROBOTS = [
 # is furniture as far as a planner is concerned.
 NAV_ROBOTS = ('r1', 'r2')
 ARM_ROBOTS = ('r1', 'r2')
+
+# WHO RUNS WHICH LEG OF THE RELAY. Both must be in ARM_ROBOTS and NAV_ROBOTS:
+# the carrier picks and drives, the receiver drives and places. Named here, in
+# the ROS-free layout module, because the relay launch file needs them and must
+# not import the mission stack (pymoveit2, rclpy and a MoveIt config) just to
+# learn two namespaces.
+#
+# r1 carries because it is the robot the single-robot run already uses, so the
+# collect leg is the leg that has been flown; r2 receives. The pair is otherwise
+# symmetric - they are identical robots facing each other across the ring.
+RELAY_CARRIER_NS = 'r1'
+RELAY_RECEIVER_NS = 'r2'
 
 # A200 chassis footprint, base_link at the chassis origin: bumper at +0.494,
 # tail at -0.496, half-width 0.335. The same rectangle nav2_params.yaml gives

@@ -46,6 +46,20 @@ setup(
             # except the handover is shared with that.
             'mission_hospital_aws = '
             'pickplace_arm_bringup.mission_hospital_aws:main',
+            # That same route cut in half - stage 5. One executable per LEG,
+            # not per mission, because each leg runs as its own node in its own
+            # robot's namespace and the two are launched behind separate
+            # readiness gates. They coordinate over a latched topic pair rather
+            # than through a parent process, so neither has to know the other
+            # has started.
+            'relay_carrier = '
+            'pickplace_arm_bringup.mission_hospital_relay:carrier',
+            'relay_receiver = '
+            'pickplace_arm_bringup.mission_hospital_relay:receiver',
+            # Drives one robot's Nav2 lifecycle from outside, with retries,
+            # because nav2_lifecycle_manager's own autostart makes exactly one
+            # attempt against a 2 s deadline it gives no parameter to raise.
+            'nav_bringup = pickplace_arm_bringup.nav_bringup:main',
             # Walks the hospital corridor's pedestrians up and down their lanes
             # so they are moving obstacles rather than scenery.
             'corridor_pedestrians = '
