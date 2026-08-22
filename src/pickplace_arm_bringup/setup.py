@@ -46,6 +46,10 @@ setup(
             # own collision geometry. Not part of any launch -- run it by hand
             # after changing the world, or the map and the building disagree.
             'aws_hospital_map = pickplace_arm_bringup.aws_hospital_map:main',
+            # Drives each robot's Nav2 lifecycle and RETRIES a stalled bring-up,
+            # which nav2_lifecycle_manager will not do. Used by the fleet launch;
+            # see its module docstring for the three runs that paid for it.
+            'nav_bringup = pickplace_arm_bringup.nav_bringup:main',
             # Manual driving, used when building a map with mapping.launch.py.
             'teleop_key = pickplace_arm_bringup.teleop_key:main',
             # Startup readiness gate used by mission_pickPlace.launch.py.

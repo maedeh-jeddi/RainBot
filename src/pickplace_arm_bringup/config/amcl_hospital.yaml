@@ -36,7 +36,14 @@ amcl:
 
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
     laser_model_type: "likelihood_field"
-    laser_max_range: 8.0
+    # 25.0, matching the LIDAR's own range in pickplace_arm.gazebo.xacro (see
+    # the long note there). AMCL DISCARDS RETURNS BEYOND THIS VALUE, so leaving
+    # it at the warehouse's 8.0 would throw away precisely the long beams that
+    # make position along this building's 40.8 m corridor observable at all.
+    # This is the one number here that is not amcl_tugbot.yaml's, besides the
+    # map and the initial pose, and it changes what the filter is fed rather
+    # than how it weighs it.
+    laser_max_range: 25.0
     laser_min_range: 0.15
     max_beams: 90
     min_particles: 500
