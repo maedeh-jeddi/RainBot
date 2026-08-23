@@ -54,6 +54,12 @@ setup(
             # every gripper and every rack. Load-bearing: see its docstring for
             # what a fleet dragging its own payload around looks like.
             'rack_release = pickplace_arm_bringup.rack_release:main',
+            # The fleet job: one mission node per robot, plus the manager that
+            # assigns the errands and hands out delivery slots and parking
+            # vertices. See task_manager.py for why the coordination lives
+            # there and not in the robots.
+            'mission_delivery = pickplace_arm_bringup.mission_delivery:main',
+            'task_manager = pickplace_arm_bringup.task_manager:main',
             # Manual driving, used when building a map with mapping.launch.py.
             'teleop_key = pickplace_arm_bringup.teleop_key:main',
             # Startup readiness gate used by mission_pickPlace.launch.py.

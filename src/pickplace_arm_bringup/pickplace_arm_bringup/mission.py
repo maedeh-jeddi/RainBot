@@ -120,7 +120,7 @@ class Mission(NavAndPick):
     def __init__(self):
         super().__init__()
         self.tp_client = ActionClient(
-            self, NavigateThroughPoses, '/navigate_through_poses')
+            self, NavigateThroughPoses, 'navigate_through_poses')
         self.get_logger().info('Mission node ready')
 
     # --- helpers ------------------------------------------------------------
@@ -142,7 +142,7 @@ class Mission(NavAndPick):
         while time.time() < deadline:
             try:
                 self.tf_buffer.lookup_transform(
-                    'map', 'base_link', rclpy.time.Time(),
+                    'map', self.tf_frame('base_link'), rclpy.time.Time(),
                     timeout=rclpy.duration.Duration(seconds=1.0))
                 log.info('[mission] localized (map->base_link available)')
                 return True
@@ -280,7 +280,7 @@ class Mission(NavAndPick):
         log = self.get_logger()
         try:
             tf = self.tf_buffer.lookup_transform(
-                'map', 'base_link', rclpy.time.Time(),
+                'map', self.tf_frame('base_link'), rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=1.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException):

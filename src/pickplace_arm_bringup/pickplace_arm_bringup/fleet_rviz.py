@@ -281,6 +281,15 @@ def fleet_rviz_config(robots, arm_robots=(), nav_robots=(),
 
     displays = [
         _grid(),
+        # THE JOB ITSELF, as the task manager sees it: the four tables, which
+        # delivery slot is taken and by whom, which parking vertex is claimed,
+        # and a status board over the lobby. None of this exists as a topic any
+        # other display could show -- it lives in the manager's head, so the
+        # manager draws it.
+        {'Class': 'rviz_default_plugins/MarkerArray', 'Enabled': True,
+         'Name': 'Task manager', 'Namespaces': {}, 'Queue Size': 100,
+         'Topic': dict(_with_filter(_RELIABLE_QOS), Value='/fleet/markers'),
+         'Value': True},
         # THE ONE THING THE FLEET SHARES. Every robot has its own odom island
         # and its own everything else; `map` is the single frame that makes
         # their poses comparable, which is why the fixed frame below is `map`

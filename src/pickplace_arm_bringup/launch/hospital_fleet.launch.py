@@ -29,15 +29,9 @@ from pickplace_arm_bringup.ns_params import diff_drive_frames, namespaced_params
 #
 #   FLEET_ROBOTS=r1,r2 FLEET_SPAWN_SETTLE=30 FLEET_NAV_SETTLE=0 \
 #     ros2 launch pickplace_arm_bringup hospital_fleet.launch.py
-_want = os.environ.get('FLEET_ROBOTS')
-if _want:
-    _keep = [n.strip() for n in _want.split(',') if n.strip()]
-    _known = {n for n, *_ in ROBOTS}
-    _unknown = [n for n in _keep if n not in _known]
-    if _unknown:
-        raise RuntimeError(
-            f'FLEET_ROBOTS names {_unknown}, not in the fleet {sorted(_known)}')
-    ROBOTS = [r for r in ROBOTS if r[0] in _keep]
+#
+# FLEET_ROBOTS itself is applied in fleet_layout, not here, so the bridge, the
+# rack detaches, the mission nodes and the task manager all see the same fleet.
 
 # HOW LONG TO WAIT BEFORE INSERTING THE FIRST ROBOT, AND HOW FAR APART TO SPACE
 # THE REST.
@@ -56,7 +50,14 @@ if _want:
 SPAWN_SETTLE = int(os.environ.get('FLEET_SPAWN_SETTLE', 45))
 SPAWN_STAGGER = int(os.environ.get('FLEET_SPAWN_STAGGER', 12))
 # Seconds between one robot's Nav2 stack and the next, and before the first.
-NAV_STAGGER = int(os.environ.get('FLEET_NAV_STAGGER', 25))
+# 40, up from 25. Each Nav2 stack is six lifecycle nodes and two costmaps, and
+# nav2_lifecycle_manager gives each change_state call a hardcoded 2 s. Measured
+# on this machine: with the third stack arriving 25 s behind the second, the one
+# minute load average went 6 -> 8 -> 17 and kept climbing to 40, and the SECOND
+# robot's bring-up then failed all four of nav_bringup's attempts. The nodes
+# were healthy; they simply could not answer in time. Spacing them further apart
+# costs startup seconds and nothing else.
+NAV_STAGGER = int(os.environ.get('FLEET_NAV_STAGGER', 40))
 # EVERY ROBOT WAITS, INCLUDING THE FIRST. A stagger of idx * NAV_STAGGER gives
 # robot zero no delay at all -- and robot zero was the one that kept failing
 # while its staggered siblings came up clean, because its controllers finish
@@ -203,6 +204,9 @@ def generate_launch_description():
         arguments=['--label', 'fleet', '--timeout', '900',
                    '--clock-stable', '0.5',
                    '--topic', f'/{last_ns}/diff_drive_controller/odom'])
+
+    # Filled in the loop below, started behind arm_gate at the end.
+    arm_actions = []
 
     actions = []
     for idx, (ns, x, y, yaw) in enumerate(ROBOTS):
@@ -404,21 +408,38 @@ def generate_launch_description():
                 .robot_description(
                     mappings={'use_gazebo': 'true', 'robot_ns': ns})
                 .to_moveit_configs())
-            # HELD BACK TO THE FLEET GATE, LIKE THE NAVIGATION STACKS. Ungated,
-            # this starts at t=0 and spends its whole construction competing with
-            # Gazebo streaming 175 models in -- the heaviest node in the system,
-            # against the one thing that has a hard 2 s deadline downstream.
+            # HELD BACK UNTIL EVERY NAVIGATION STACK IS SERVING, which is later
+            # than it looks and is the point.
             #
-            # It starts on the gate with NO extra delay while the Nav2 stacks
-            # wait NAV_SETTLE behind it, so move_group gets the quiet window
-            # between the last spawn and the first lifecycle manager instead of
-            # overlapping either. Nothing needs an arm until a mission runs.
-            actions.append(RegisterEventHandler(
-                OnProcessExit(target_action=fleet_gate, on_exit=[Node(
-                    package='moveit_ros_move_group', executable='move_group',
-                    namespace=ns, output='screen',
-                    parameters=[moveit_config.to_dict(), sim,
-                                {'trajectory_execution.allowed_start_tolerance': 0.1}])])))
+            # This used to start on the fleet gate, alongside the Nav2 stacks.
+            # Measured on this machine, that is what made three robots
+            # impossible: three move_groups came to 61% of a core EACH during
+            # the window where nav2_lifecycle_manager is making change_state
+            # calls with a 2 s deadline it hardcodes. The second and third
+            # robots' stacks then failed every one of nav_bringup's four
+            # attempts -- "6 node(s) not active" -- while the one-minute load
+            # average climbed past 40 and stayed there. The nodes were healthy;
+            # they could not answer in time.
+            #
+            # NOTHING NEEDS AN ARM UNTIL A ROBOT REACHES A TABLE, which is
+            # minutes after it starts driving, so paying for three move_groups
+            # during bring-up buys nothing at all. Waiting for the last robot's
+            # navigate_to_pose is a CONDITION rather than a delay: a fast
+            # machine starts the arms sooner, a slow one still starts them
+            # correctly.
+            arm_actions.append(Node(
+                package='moveit_ros_move_group', executable='move_group',
+                namespace=ns, output='screen',
+                parameters=[moveit_config.to_dict(), sim,
+                            {'trajectory_execution.allowed_start_tolerance': 0.1}]))
+
+    # The condition the arms wait on: every robot's bt_navigator serving, which
+    # is exactly "all three stacks are up and the machine is quiet again".
+    arm_gate = Node(
+        package='pickplace_arm_bringup', executable='wait_for',
+        name='wait_for_arms', output='screen', parameters=[sim],
+        arguments=['--label', 'arms', '--timeout', '900']
+        + [a for n in NAV_ROBOTS for a in ('--action', f'/{n}/navigate_to_pose')])
 
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2', output='screen',
@@ -461,4 +482,7 @@ def generate_launch_description():
         rviz,
         fleet_gate,
         *actions,
+        arm_gate,
+        RegisterEventHandler(OnProcessExit(target_action=arm_gate,
+                                           on_exit=arm_actions)),
     ])

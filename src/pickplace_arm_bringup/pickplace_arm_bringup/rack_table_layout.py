@@ -75,6 +75,12 @@ RACK_LOCAL_Y = -(TABLE_SHORT / 2.0 - RACK_EDGE_INSET)      # -0.184
 # Racks stand ON the top, and the rack model carries its origin on its own tray
 # underside, so this is simply the table top's height.
 RACK_SPAWN_Z = TABLE_TOP
+# Height of the rack's grip block CENTRE above its own tray underside -- the one
+# number a rack costs over a box, and the one every placement height is derived
+# from. Defined here, next to the table it stands on, because the two are always
+# used together: a rack on this table puts its grasp point at
+# TABLE_TOP + RACK_GRIP_HEIGHT above the floor. See models/rack_red.
+RACK_GRIP_HEIGHT = 0.170
 
 # --- where the robot stands ---------------------------------------------------
 #
@@ -84,6 +90,29 @@ RACK_SPAWN_Z = TABLE_TOP
 # in. It is NOT the grasp distance; the visual servo decides that.
 NAV_STANDOFF = 1.30
 STANDOFF_LOCAL_Y = RACK_LOCAL_Y - NAV_STANDOFF             # -1.484
+
+# THE DELIVERY TABLE IS APPROACHED CLOSER, because nothing has to be SEEN there.
+#
+# 1.30 m is a detection distance: at a collection table the front camera has to
+# find the rack from the standoff, and claw_approach then servos the last
+# stretch in. Placing is the other way round -- the robot already holds the
+# rack, and the only thing that matters is that the slot ends up inside the
+# arm's 0.85 m reach.
+#
+# Parking at 1.30 m left a 0.48 m gap for _creep_forward to close, and that
+# creep measured 0.000 m of movement: the mission node and Nav2's
+# controller_server BOTH publish to the same cmd_vel topic (publisher count 2),
+# so a creep issued just after a goal completes is arguing with whatever the
+# controller last said. Closing most of the gap with the nav goal itself means
+# there is far less left to creep, and the creep that remains is short.
+#
+# 0.85 m keeps the geometry safe: the slot sits 0.15 m in from the table's near
+# edge, so that edge lands 0.70 m ahead of base_link against a bumper at 0.494 --
+# 0.21 m of clearance, comparable to what the collection tables leave. It also
+# puts the slot inside the arm's reach AT THIS HEIGHT on arrival, so the common
+# case needs no creep at all; see DELIVERY_MAX_REACH_X in mission_delivery.
+DELIVERY_NAV_STANDOFF = 0.85
+DELIVERY_STANDOFF_LOCAL_Y = RACK_LOCAL_Y - DELIVERY_NAV_STANDOFF
 
 
 def _to_world(table, lx, ly):
@@ -220,7 +249,7 @@ def delivery_standoff():
     single standoff rather than one per slot.
     """
     _, table = DELIVERY_TABLE
-    return _to_world(table, 0.0, STANDOFF_LOCAL_Y) + (_robot_yaw(table),)
+    return _to_world(table, 0.0, DELIVERY_STANDOFF_LOCAL_Y) + (_robot_yaw(table),)
 
 
 def delivery_table_pose():

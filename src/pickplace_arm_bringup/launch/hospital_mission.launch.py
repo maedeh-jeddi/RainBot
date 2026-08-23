@@ -138,6 +138,56 @@ def generate_launch_description():
         + ['--duration', '20', '--rate', '2'])
     detaches = [release]
 
+    # --- the job -------------------------------------------------------------
+    #
+    # One mission node per robot, in that robot's namespace, plus one manager in
+    # the global namespace. The split is deliberate: a mission node knows how to
+    # run ONE errand and nothing about the others; the manager is the only thing
+    # that can see all three at once, so it is where assignment, the delivery
+    # slot row, the parking vertices and the anti-collision sequencing live.
+    #
+    # HELD BACK BEHIND THE SAME GATE AS THE PROPS AND THEN SOME. A mission node
+    # constructs a MoveIt2 client and a pile of action clients; started before
+    # its robot's Nav2 stack is serving, it would sit retrying while the machine
+    # is at its busiest.
+    #
+    # THIS GATE IS DELIBERATELY COARSE, and the TASK MANAGER makes the fine
+    # decision. An action server appearing is not proof that a robot is ready:
+    # nav_bringup RESETs and retries a stalled stack, so during a retry storm
+    # navigate_to_pose comes and goes, and a gate that samples once will happily
+    # release the fleet in one of those windows. The manager waits for each
+    # robot's localization to hold steady before giving it an errand -- see
+    # wait_ready() in task_manager.py.
+    mission_gate = Node(
+        package='pickplace_arm_bringup', executable='wait_for',
+        name='wait_for_mission', output='screen',
+        parameters=[{'use_sim_time': True}],
+        arguments=['--label', 'mission', '--timeout', '900']
+        # NO TF CHECK HERE, DELIBERATELY. The condition that matters is that
+        # each robot's AMCL is localizing, and the obvious way to test it is
+        # map -> <ns>/base_link. But a tf2 listener in PYTHON deserialises every
+        # /tf message, and three robots publish full TF trees at 50 Hz: measured,
+        # this one gate cost 24% of a core for the whole bring-up, in exactly
+        # the window where nav2_lifecycle_manager's hardcoded 2 s deadlines are
+        # being missed. It was buying a check the mission node already makes for
+        # itself -- wait_for_localization() waits for that same transform -- so
+        # the gate stays cheap and the MISSION NODE is patient instead.
+        + [a for ns in ARM_ROBOTS
+           for a in ('--action', f'/{ns}/navigate_to_pose')]
+        + [a for ns in ARM_ROBOTS
+           for a in ('--action', f'/{ns}/move_action')])
+
+    missions = [
+        Node(package='pickplace_arm_bringup', executable='mission_delivery',
+             namespace=ns, name='mission_delivery', output='screen',
+             parameters=[{'use_sim_time': True}])
+        for ns in ARM_ROBOTS
+    ]
+    manager = Node(
+        package='pickplace_arm_bringup', executable='task_manager',
+        name='task_manager', output='screen',
+        parameters=[{'use_sim_time': True}])
+
     # Hung off the LAST RACK's spawner, not the last table's. The racks are
     # created here rather than inside the event handlers precisely so that they
     # stay addressable as launch actions and this ordering can be stated exactly:
@@ -157,4 +207,10 @@ def generate_launch_description():
         detach_after_racks,
         RegisterEventHandler(OnProcessExit(target_action=prop_gate,
                                            on_exit=tables)),
+        # The mission gate starts once the props are down -- the racks must
+        # exist and be released before any robot is told to go and fetch one.
+        RegisterEventHandler(OnProcessExit(target_action=racks[-1],
+                                           on_exit=[mission_gate])),
+        RegisterEventHandler(OnProcessExit(target_action=mission_gate,
+                                           on_exit=missions + [manager])),
     ])

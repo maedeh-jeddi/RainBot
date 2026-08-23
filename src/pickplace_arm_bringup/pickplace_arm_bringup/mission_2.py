@@ -258,7 +258,7 @@ class Mission2(Mission):
     def __init__(self):
         super().__init__()
         self._set_params_client = self.create_client(
-            SetParameters, '/controller_server/set_parameters')
+            SetParameters, 'controller_server/set_parameters')
         self.get_logger().info('Mission 2 node ready')
 
     # --- Nav2 tuning ----------------------------------------------------------
@@ -306,7 +306,8 @@ class Mission2(Mission):
         publishing (see _creep_forward). Callers must tolerate None."""
         try:
             tf = self.tf_buffer.lookup_transform(
-                'odom', 'base_link', rclpy.time.Time(),
+                self.tf_frame('odom'), self.tf_frame('base_link'),
+                rclpy.time.Time(),
                 timeout=RclDuration(seconds=timeout_sec))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
@@ -347,9 +348,16 @@ class Mission2(Mission):
         moved, i = 0.0, 0
         while time.time() < deadline:
             self.cmd_vel_pub.publish(twist)
-            time.sleep(0.05)
+            # 50 Hz, not 20. THIS TOPIC HAS TWO PUBLISHERS in a fleet: Nav2's
+            # controller_server is remapped onto it, so a creep issued moments
+            # after a goal completes is interleaved with whatever the controller
+            # last said -- and diff_drive_controller simply obeys the most
+            # recent message. Publishing faster than the contender is what makes
+            # the creep the one that lands. Measured before this: a 0.48 m creep
+            # moved 0.000 m over its full 25 s timeout.
+            time.sleep(0.02)
             i += 1
-            if i % 4:                     # poll odom ~5 Hz, publish at 20 Hz
+            if i % 10:                    # poll odom ~5 Hz, publish at 50 Hz
                 continue
             now = self._base_in_odom()
             if now is not None:

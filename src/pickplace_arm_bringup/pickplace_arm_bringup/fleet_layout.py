@@ -15,6 +15,7 @@ maps/aws_hospital.yaml is generated from the world's own geometry by
 aws_hospital_map.py, so map == world exactly.
 """
 import math
+import os
 
 # --- the reception desk -------------------------------------------------------
 #
@@ -99,6 +100,36 @@ ROBOTS = [
     ('r3',) + _vertex(2) + (_facing(_vertex(2), DESK_FACE),),
 ]
 
+# --- running a smaller fleet ---------------------------------------------------
+#
+# FLEET_ROBOTS trims the fleet, and it is applied HERE rather than in the launch
+# file so that everything agrees on how many robots there are: the spawner, the
+# ros_gz bridge, the startup rack detaches, the mission nodes and the task
+# manager's assignment all read this list.
+#
+# WHY IT EXISTS. Three robots is three Nav2 stacks, three move_groups and three
+# mission nodes, and that is more than some machines can carry. Measured on a
+# 16-core box that ran the three-robot fleet comfortably when the robots were
+# idle: with all three ALSO running missions the one-minute load average sat
+# near 50, the CPU package reached 93 C, and Nav2's own nodes began timing out
+# acknowledging each other's goals -- "Timed out while waiting for action server
+# to acknowledge goal request for compute_path_to_pose". Nothing was broken;
+# there was simply no CPU left.
+#
+#   FLEET_ROBOTS=r1,r2 ros2 launch pickplace_arm_bringup hospital_mission.launch.py
+#
+# runs the identical job with two robots and two errands. The third collection
+# table and rack still exist in the world; they are simply not assigned.
+_want = os.environ.get('FLEET_ROBOTS')
+if _want:
+    _keep = [n.strip() for n in _want.split(',') if n.strip()]
+    _known = {n for n, *_ in ROBOTS}
+    _unknown = [n for n in _keep if n not in _known]
+    if _unknown:
+        raise RuntimeError(
+            f'FLEET_ROBOTS names {_unknown}, not in the fleet {sorted(_known)}')
+    ROBOTS = [r for r in ROBOTS if r[0] in _keep]
+
 # Every robot in this fleet drives AND manipulates -- each one collects a rack
 # and delivers it. That is a deliberate difference from the abandoned four-robot
 # ring, where two robots were parked furniture because the machine could not run
@@ -119,6 +150,48 @@ WORLD_ENTITY = 'aws_hospital'
 # the costmaps. Circumscribed radius 0.598, inscribed 0.335.
 ROBOT_FOOTPRINT = (0.494, -0.496, 0.335)
 ROBOT_RADIUS = 0.598
+
+
+# --- where they go when the job is done ---------------------------------------
+#
+# A SECOND TRIANGLE, DELIBERATELY THE SAME SHAPE AS THE FIRST. Same circumradius
+# as the reception formation, so the fleet at rest looks the same wherever it is
+# parked; found by the same search, with the reception formation, the delivery
+# table and the delivery standoff all added as keep-outs so a parked robot can
+# never be in the way of a working one.
+#
+# Measured against the collision meshes at every height from 0.05 to 1.15 m:
+#
+#   p0 (+1.00, +16.25)   1.50 m clear
+#   p1 (-0.73, +13.25)   2.55 m clear
+#   p2 (+2.73, +13.25)   1.61 m clear
+#
+# 3.46 m between neighbours, i.e. 2.26 m of daylight between chassis, and 5.6 m
+# from the reception formation.
+#
+# WHICH ROBOT GETS WHICH VERTEX IS NOT FIXED HERE, and that is the point. The
+# task manager hands out whichever vertex is still free when a robot asks, so
+# the first robot to finish takes p0 whoever it is. See task_manager.py.
+PARKING_CENTRE = (1.0, 14.25)
+PARKING_RADIUS = 2.00
+PARKING_ROTATION = math.pi / 2.0
+
+
+def parking_vertices():
+    """The three parking poses, as (x, y, yaw), in claim order.
+
+    Each faces the parking triangle's own centre, which keeps three parked
+    robots looking at each other rather than at a wall -- the same convention
+    the reception formation uses, where they all face the counter.
+    """
+    out = []
+    for k in range(3):
+        a = PARKING_ROTATION + k * 2.0 * math.pi / 3.0
+        px = PARKING_CENTRE[0] + PARKING_RADIUS * math.cos(a)
+        py = PARKING_CENTRE[1] + PARKING_RADIUS * math.sin(a)
+        out.append((px, py, math.atan2(PARKING_CENTRE[1] - py,
+                                       PARKING_CENTRE[0] - px)))
+    return out
 
 
 def robot(ns):

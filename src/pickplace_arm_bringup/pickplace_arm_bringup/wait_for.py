@@ -84,6 +84,7 @@ class WaitFor(Node):
             self.buf = tf2_ros.Buffer()
             self.listener = tf2_ros.TransformListener(self.buf, self)
         self.tf_ok = not args.tf
+        self._tf_seen = set()
 
         self.create_timer(0.25, self._tick)
 
@@ -118,18 +119,28 @@ class WaitFor(Node):
         return (time.time() - self.stable_since) >= self.args.clock_stable
 
     def _tf_ready(self):
+        """Every requested transform, not just the first.
+
+        --tf is repeatable so one gate can wait on a whole fleet localizing.
+        Each pair is remembered once it first resolves, so a transform that
+        blinks does not send the gate back to the start.
+        """
         if self.tf_ok:
             return True
-        try:
-            self.buf.lookup_transform(self.args.tf[0], self.args.tf[1],
-                                      rclpy.time.Time())
-            self.tf_ok = True
+        for pair in self.args.tf:
+            key = tuple(pair)
+            if key in self._tf_seen:
+                continue
+            try:
+                self.buf.lookup_transform(pair[0], pair[1], rclpy.time.Time())
+            except Exception:
+                return False
+            self._tf_seen.add(key)
             self.get_logger().info(
-                f'TF {self.args.tf[0]}->{self.args.tf[1]} available '
+                f'TF {pair[0]}->{pair[1]} available '
                 f'(t+{time.time() - self.t0:.1f}s)')
-        except Exception:
-            pass
-        return self.tf_ok
+        self.tf_ok = True
+        return True
 
     def _topics_ready(self):
         for t in self.args.topic:
@@ -209,7 +220,10 @@ def main(argv=None):
                         'forever. A genuine fault -- an orphaned second gz '
                         'server, a sim reset -- moves time by whole seconds, so '
                         '0.1 s separates the two cleanly with 5x margin.')
-    p.add_argument('--tf', nargs=2, metavar=('TARGET', 'SOURCE'))
+    # Repeatable: a fleet gate needs map -> r1/base_link AND map -> r2/base_link
+    # AND map -> r3/base_link, not just the first of them.
+    p.add_argument('--tf', nargs=2, action='append', default=[],
+                   metavar=('TARGET', 'SOURCE'))
     p.add_argument('--topic', action='append', default=[])
     p.add_argument('--service', action='append', default=[])
     p.add_argument('--action', action='append', default=[])

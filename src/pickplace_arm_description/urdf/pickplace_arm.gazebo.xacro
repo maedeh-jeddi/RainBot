@@ -394,7 +394,33 @@
              rotate the chassis to re-acquire it (no spin before arriving). -->
         <horizontal_fov>1.57</horizontal_fov>
         <image>
-          <width>640</width>
+          <!-- SQUARE, 480x480, NOT 640x480. The horizontal FOV is set to 90 deg
+               above, and the VERTICAL field follows from the aspect ratio: at
+               4:3 that is only 73.7 deg, i.e. 36.85 deg above the lens axis.
+               That is enough for a box and not enough for a rack.
+
+               Measured directly, walking the base in on a rack and counting
+               coloured pixels in the detection gate:
+
+                   base -> rack   0.862   2665 px
+                                  0.792   1360 px   (blob half out of frame)
+                                  0.727      0 px   (gone)
+
+               The rack's grip block sits 0.271 m above the lens, so at 0.727 m
+               it subtends 41.9 deg - outside the 36.85 deg the sensor had. A
+               box on the same table sits 0.107 m up and subtends 18 deg, which
+               is why every box pick worked and the rack pick failed at exactly
+               the tuned CLAW_STOP_X of 0.75.
+
+               A square image makes the vertical field equal to the horizontal
+               90 deg, giving 45 deg of half-angle and 5 deg of margin at the
+               stop distance - so CLAW_STOP_X and every distance tuned against
+               it stay exactly as they were. 480x480 also carries 25% FEWER
+               points than 640x480, which the fleet's three cameras care about.
+
+               The blob shrinks with the wider field (measured 2665 px scales to
+               roughly 1600), still fifty times MIN_VALID_PIXELS. -->
+          <width>480</width>
           <height>480</height>
           <format>R8G8B8</format>
         </image>

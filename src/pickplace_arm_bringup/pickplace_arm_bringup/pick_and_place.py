@@ -347,6 +347,27 @@ class PickAndPlace(Node):
         super().__init__('pick_and_place')
         cbg = ReentrantCallbackGroup()
 
+        # TWO DIFFERENT `base_link`s LIVE IN THIS CLASS, AND THEY MUST NOT BE
+        # CONFLATED.
+        #
+        # The TF tree is per-robot: robot_state_publisher stamps every frame
+        # with the robot's namespace, so on r1 the LIDAR is r1/lidar_link and
+        # the chassis is r1/base_link. Anything that goes to tf_buffer therefore
+        # has to be prefixed, which is what tf_frame() below is for.
+        #
+        # MoveIt's model is NOT prefixed. move_group is launched into the
+        # robot's namespace with the same unprefixed URDF, so its links are
+        # plain `base_link`, `fr3_link7` and so on -- and nothing outside that
+        # node ever sees them. Frame names handed to MoveIt (base_link_name
+        # here, the frame_id on a collision object, a pose goal) must stay BARE.
+        # Prefixing them makes MoveIt reject a link its model has never heard
+        # of.
+        #
+        # Rule of thumb: prefix it if tf2 will resolve it, leave it bare if
+        # MoveIt will.
+        ns = self.get_namespace().strip('/')
+        self.tf_prefix = f'{ns}/' if ns else ''
+
         self.arm = MoveIt2(
             node=self, joint_names=ARM_JOINTS, base_link_name='base_link',
             end_effector_name=GRASP_LINK, group_name='arm', callback_group=cbg)
@@ -366,8 +387,15 @@ class PickAndPlace(Node):
         self.scan_position = SCAN_POSITION
         self.scan_pitch = SCAN_PITCH
 
+        # EVERY NAME IN THIS CLASS AND ITS SUBCLASSES IS RELATIVE, NOT ABSOLUTE.
+        # A leading slash pins a topic to the global namespace, which is right
+        # for one robot and wrong for a fleet: launched into /r1 this node would
+        # drive /gripper_controller while its own controllers listen on
+        # /r1/gripper_controller, and it would fail by doing NOTHING rather than
+        # by raising. Relative names resolve to exactly the old topics when the
+        # node runs unnamespaced, so the single-robot missions are unchanged.
         self.gripper_pub = self.create_publisher(
-            JointTrajectory, '/gripper_controller/joint_trajectory', 10)
+            JointTrajectory, 'gripper_controller/joint_trajectory', 10)
 
         # --- perception: point cloud subscriptions + TF ---
         # Wrist (eye-in-hand) RGB-D for the precise grasp scan, and the
@@ -375,12 +403,12 @@ class PickAndPlace(Node):
         self._cloud_lock = Lock()
         self._latest_cloud = None
         self.create_subscription(
-            PointCloud2, '/camera/points', self._cloud_cb, 1,
+            PointCloud2, 'camera/points', self._cloud_cb, 1,
             callback_group=cbg)
         self._front_lock = Lock()
         self._front_cloud = None
         self.create_subscription(
-            PointCloud2, '/front_camera/points', self._front_cloud_cb, 1,
+            PointCloud2, 'front_camera/points', self._front_cloud_cb, 1,
             callback_group=cbg)
 
         # Latest joint positions -- used to VERIFY a grasp actually holds the
@@ -388,7 +416,7 @@ class PickAndPlace(Node):
         # nearest, simplest joint path (current arm config).
         self._joint_pos = {}
         self.create_subscription(
-            JointState, '/joint_states', self._joint_state_cb, 10,
+            JointState, 'joint_states', self._joint_state_cb, 10,
             callback_group=cbg)
 
         self.tf_buffer = tf2_ros.Buffer()
@@ -400,8 +428,8 @@ class PickAndPlace(Node):
         # Tugbot-warehouse run. These publish through the ros_gz bridge.
         self._attach_pubs, self._detach_pubs = {}, {}
         for c, model in self.GRASP_MODELS.items():
-            self._attach_pubs[c] = self.create_publisher(Empty, f'/{model}/attach', 10)
-            self._detach_pubs[c] = self.create_publisher(Empty, f'/{model}/detach', 10)
+            self._attach_pubs[c] = self.create_publisher(Empty, f'{model}/attach', 10)
+            self._detach_pubs[c] = self.create_publisher(Empty, f'{model}/detach', 10)
         self._attached_color = None
         # The plugins weld each box the moment it spawns -- metres away, with
         # the robot about to drive off and drag it. Break those welds before
@@ -639,6 +667,16 @@ class PickAndPlace(Node):
         if release:
             self.detach_box(log_label=f'on gripper open ({label})')
 
+    def tf_frame(self, name):
+        """A TF frame name for THIS robot.
+
+        `map` is deliberately excluded: it is the one frame the whole fleet
+        shares, and it is what makes one robot's pose comparable with another's.
+        Everything else -- odom, base_link, the sensor frames -- belongs to a
+        single robot and carries its namespace.
+        """
+        return name if name == 'map' else self.tf_prefix + name
+
     def add_box(self, xy, z_center=None):
         if z_center is None:
             z_center = GROUND_Z + BOX_SIZE / 2.0  # ground box in base_link frame
@@ -680,9 +718,9 @@ class PickAndPlace(Node):
         lets the colour servo lock onto the target instead of the walls."""
         log = self.get_logger()
         if source == 'front':
-            lock, cloud_frame = self._front_lock, 'front_camera_link'
+            lock, cloud_frame = self._front_lock, self.tf_frame('front_camera_link')
         else:
-            lock, cloud_frame = self._cloud_lock, 'camera_link'
+            lock, cloud_frame = self._cloud_lock, self.tf_frame('camera_link')
         with lock:
             if source == 'front':
                 self._front_cloud = None
@@ -771,7 +809,7 @@ class PickAndPlace(Node):
         point.point.x, point.point.y, point.point.z = cx, cy, cz
         try:
             tf = self.tf_buffer.lookup_transform(
-                'base_link', cloud_frame, rclpy.time.Time(),
+                self.tf_frame('base_link'), cloud_frame, rclpy.time.Time(),
                 timeout=RclDuration(seconds=1.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:

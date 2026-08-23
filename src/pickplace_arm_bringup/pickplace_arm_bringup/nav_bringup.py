@@ -121,6 +121,11 @@ class NavBringup(Node):
                       f'is the lifecycle manager running?')
             return False
 
+        if self.args.pre_settle > 0.0:
+            log.info(f'[{self.ns}] letting the managed nodes construct for '
+                     f'{self.args.pre_settle:.0f}s before the first STARTUP')
+            time.sleep(self.args.pre_settle)
+
         for attempt in range(1, self.args.attempts + 1):
             log.info(f'[{self.ns}] bring-up attempt {attempt}'
                      f'/{self.args.attempts}')
@@ -155,7 +160,19 @@ def main(argv=None):
     p.add_argument('--settle', type=float, default=45.0,
                    help='seconds to wait for all nodes to reach active')
     p.add_argument('--backoff', type=float, default=5.0)
-    p.add_argument('--command-timeout', type=float, default=120.0)
+    # 45, down from 120. The point of this node is to RETRY, and a 120 s
+    # command timeout made each failed attempt cost 120 + settle + backoff =
+    # 170 s, so four attempts took eleven minutes -- longer than anything
+    # waiting on the robot is willing to wait, which turns a recoverable stall
+    # into a robot that never gets an errand. Measured: r2's STARTUP blocked the
+    # full 120 s and failed, twice, while r1's identical call returned in 2 s.
+    # A manager that has not answered in 45 s is stuck, not slow.
+    p.add_argument('--command-timeout', type=float, default=45.0)
+    # Let the managed nodes finish CONSTRUCTING before asking them to
+    # transition. Their change_state services are advertised in the constructor,
+    # about a second in, so every gate upstream of here is satisfied long before
+    # the nodes can actually answer -- see this module's docstring.
+    p.add_argument('--pre-settle', type=float, default=8.0)
     p.add_argument('--wait-manager', type=float, default=120.0)
     args, _unknown = p.parse_known_args(argv)
 

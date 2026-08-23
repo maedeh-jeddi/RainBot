@@ -70,7 +70,7 @@ class NavAndPick(SearchAndPick):
         # controller directly. Navigation (Nav2) and this node's spin/visual
         # servo run in separate, non-overlapping phases, so they can share that
         # topic without a twist_mux arbitrating between them.
-        self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
+        self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self.get_logger().info('Nav-and-pick node ready')
 
     # --- scan one full revolution in place, return the box if seen ----------
@@ -115,14 +115,14 @@ class NavAndPick(SearchAndPick):
     def box_in_map(self, bx, by):
         try:
             tf = self.tf_buffer.lookup_transform(
-                'map', 'base_link', rclpy.time.Time(),
+                'map', self.tf_frame('base_link'), rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=2.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
             self.get_logger().error(f'[nav] map<-base_link TF failed: {e}')
             return None
         pt = PointStamped()
-        pt.header.frame_id = 'base_link'
+        pt.header.frame_id = self.tf_frame('base_link')
         pt.point.x, pt.point.y, pt.point.z = bx, by, 0.0
         pm = tf2_geometry_msgs.do_transform_point(pt, tf)
         return pm.point.x, pm.point.y
@@ -130,7 +130,7 @@ class NavAndPick(SearchAndPick):
     def robot_in_map(self):
         try:
             tf = self.tf_buffer.lookup_transform(
-                'map', 'base_link', rclpy.time.Time(),
+                'map', self.tf_frame('base_link'), rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=2.0))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
