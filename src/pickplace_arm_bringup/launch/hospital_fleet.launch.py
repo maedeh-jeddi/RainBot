@@ -36,34 +36,47 @@ from pickplace_arm_bringup.ns_params import diff_drive_frames, namespaced_params
 # HOW LONG TO WAIT BEFORE INSERTING THE FIRST ROBOT, AND HOW FAR APART TO SPACE
 # THE REST.
 #
-# The settle is the GUI gate described at the spawn below: a model inserted while
-# the viewport is still streaming 175 models never gets drawn.
+# THE SETTLE IS A GUI CONCERN ONLY, so headless pays nothing for it. Gazebo
+# exposes no "GUI scene loaded" signal, and a model inserted while the viewport
+# is still streaming 175 models is accepted by the server and then never drawn --
+# so with a GUI this stays a measured delay. With `-s` there is no viewport to
+# lose the robot in, and the spawn is already gated on the server advertising
+# /world/<name>/create, which is the condition that actually matters.
 #
-# The stagger exists for a different reason and is not cosmetic. Every robot's
-# controller chain starts when its spawn returns, and all of their
-# controller_managers live inside the ONE gz sim process. Spawned together, the
-# chains hit that process at the same instant and the losers do not just wait --
-# they die: "Could not contact service /r1/controller_manager/list_controllers",
-# spawner exits 1, and that robot has no drive controller for the rest of the
-# run. Raising the spawner timeout alone did not fix it, because the problem is
-# contention rather than a slow answer.
-SPAWN_SETTLE = int(os.environ.get('FLEET_SPAWN_SETTLE', 45))
-SPAWN_STAGGER = int(os.environ.get('FLEET_SPAWN_STAGGER', 12))
-# Seconds between one robot's Nav2 stack and the next, and before the first.
-# 40, up from 25. Each Nav2 stack is six lifecycle nodes and two costmaps, and
-# nav2_lifecycle_manager gives each change_state call a hardcoded 2 s. Measured
-# on this machine: with the third stack arriving 25 s behind the second, the one
-# minute load average went 6 -> 8 -> 17 and kept climbing to 40, and the SECOND
-# robot's bring-up then failed all four of nav_bringup's attempts. The nodes
-# were healthy; they simply could not answer in time. Spacing them further apart
-# costs startup seconds and nothing else.
-NAV_STAGGER = int(os.environ.get('FLEET_NAV_STAGGER', 40))
-# EVERY ROBOT WAITS, INCLUDING THE FIRST. A stagger of idx * NAV_STAGGER gives
-# robot zero no delay at all -- and robot zero was the one that kept failing
-# while its staggered siblings came up clean, because its controllers finish
-# first and its Nav2 bring-up then starts while the others are still being
-# inserted into Gazebo and claiming controllers of their own.
-NAV_SETTLE = int(os.environ.get('FLEET_NAV_SETTLE', 45))
+# 20 rather than the 45 it used to be. 45 was inherited from a period when this
+# machine was being crippled by an orphaned RViz (see the note on load in
+# fleet_layout) and everything was measured against a thrashing box.
+SPAWN_SETTLE = int(os.environ.get(
+    'FLEET_SPAWN_SETTLE', 0 if os.environ.get('HEADLESS') == '1' else 20))
+# The stagger is NOT cosmetic and stays: every robot's controller chain starts
+# when its spawn returns, and all of their controller_managers live inside the
+# ONE gz sim process. Spawned together the losers do not wait, they die --
+# "Could not contact service /r1/controller_manager/list_controllers", and that
+# robot has no drive controller for the rest of the run. 6 s is enough to spread
+# both the insertion and the controller bring-up.
+SPAWN_STAGGER = int(os.environ.get('FLEET_SPAWN_STAGGER', 6))
+
+# NAV_SETTLE AND NAV_STAGGER ARE BOTH ZERO NOW, AND THAT IS A DELIBERATE
+# SIMPLIFICATION RATHER THAN A GAMBLE.
+#
+# They existed to keep three lifecycle bring-ups from overlapping, because
+# nav2_lifecycle_manager gives each change_state call a deadline Humble
+# hardcodes at 2 s and one slow answer stops the bring-up dead. But the ordering
+# they were buying is ALREADY ENFORCED, twice over, by things that are
+# conditions rather than guesses:
+#
+#   lifecycle_gate  waits for the PREVIOUS robot's navigate_to_pose to be
+#                   serving before this robot's manager is even started, which
+#                   is precisely "that stack has finished and the machine is
+#                   quiet again"
+#   nav_bringup     retries a stalled bring-up instead of leaving a dead robot
+#
+# So the two constants were adding 45 + 40 + 40 = 125 s of pure waiting on top
+# of a gate that was going to serialise the work anyway. Letting the NODES
+# construct in parallel while ACTIVATION stays serialised is the whole point.
+# Both remain overridable if a slower machine turns out to need them.
+NAV_STAGGER = int(os.environ.get('FLEET_NAV_STAGGER', 0))
+NAV_SETTLE = int(os.environ.get('FLEET_NAV_SETTLE', 0))
 NAV_NODES = ['controller_server', 'smoother_server', 'planner_server',
              'behavior_server', 'bt_navigator']
 
@@ -466,15 +479,18 @@ def generate_launch_description():
            os.path.join(desc_share, 'aws_hospital_models'))],
         SetEnvironmentVariable('GZ_FUEL_CACHE_PATH',
                                os.path.join(desc_share, 'fuel_cache')),
-        # The same DDS workaround the single-robot launches carry, and a fleet
-        # needs it more than they do: three robots is roughly thirty nodes, and
-        # default FastDDS discovery starts losing endpoints at that scale. The
-        # symptom is not a crash -- it is one robot silently never receiving a
-        # goal its action client believed it sent, while its identical siblings
-        # drive off normally.
+        # SHARED MEMORY FOR DATA, UDP FOR DISCOVERY -- and for a fleet that is
+        # not a micro-optimisation, it is the difference between the machine
+        # coping and not. The single-robot launches use fastdds_udp_only.xml,
+        # whose own note says the throughput cost of disabling SHM "is not a
+        # concern" on one host; with three robots /tf alone runs at 76 Hz into
+        # 29 subscribers, so every message was being pushed through loopback UDP
+        # twenty-nine times. See config/fastdds_shm.xml for the measurements and
+        # for how to clear the stale-segment error that made someone turn SHM
+        # off in the first place.
         SetEnvironmentVariable(
             'FASTRTPS_DEFAULT_PROFILES_FILE',
-            os.path.join(bringup_share, 'config', 'fastdds_udp_only.xml')),
+            os.path.join(bringup_share, 'config', 'fastdds_shm.xml')),
         gazebo,
         bridge,
         map_server,

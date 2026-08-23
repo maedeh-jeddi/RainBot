@@ -173,9 +173,13 @@ def generate_launch_description():
         # itself -- wait_for_localization() waits for that same transform -- so
         # the gate stays cheap and the MISSION NODE is patient instead.
         + [a for ns in ARM_ROBOTS
-           for a in ('--action', f'/{ns}/navigate_to_pose')]
-        + [a for ns in ARM_ROBOTS
-           for a in ('--action', f'/{ns}/move_action')])
+           for a in ('--action', f'/{ns}/navigate_to_pose')])
+    # NOTE what is NOT waited on here: move_action. move_group is the slowest
+    # node in the system to become ready, and NOTHING NEEDS AN ARM UNTIL A ROBOT
+    # REACHES A TABLE -- which is a 29 to 40 m drive, a minute or more after
+    # dispatch. Waiting for it put its whole construction on the critical path
+    # for no benefit at all. The arms come up (behind their own gate, after the
+    # navigation stacks) while the robots are already driving.
 
     missions = [
         Node(package='pickplace_arm_bringup', executable='mission_delivery',

@@ -111,6 +111,18 @@ def _walk(node, ns):
         if 'global_frame' in out and 'robot_base_frame' in out \
                 and 'plugins' in out:
             out['transform_tolerance'] = 1.0
+            # DO NOT REPUBLISH THE WHOLE COSTMAP EVERY CYCLE.
+            #
+            # always_send_full_costmap makes Costmap2DROS publish every cell it
+            # owns on each publish tick instead of just what changed. The global
+            # costmap here covers the whole building at 5 cm -- 540 x 1160 =
+            # 626,400 cells -- so with three robots that is three full grids
+            # going out every second, to every costmap subscriber including
+            # RViz, forever, whether or not anything moved.
+            #
+            # Fleet-only, applied by the rewriter: the single-robot missions
+            # keep nav2_params.yaml exactly as tuned.
+            out['always_send_full_costmap'] = False
         # AMCL MUST NOT POST-DATE ITS TRANSFORM BY MORE THAN THE REST OF THE
         # CHAIN CAN REACH.
         #

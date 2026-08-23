@@ -12,7 +12,18 @@
 # problem and is not one.
 /**/controller_manager:
   ros__parameters:
-    update_rate: 100  # Hz
+    # 50 Hz, down from 100. This rate drives EVERY controller, and through
+    # joint_state_broadcaster it also sets how fast /joint_states -- and
+    # therefore robot_state_publisher's whole TF tree -- is republished. With
+    # three robots that is three times ~30 frames, and every move_group, costmap
+    # and mission node in the system deserialises all of it. Halving it halves
+    # that traffic outright.
+    #
+    # Nothing here needs 100 Hz: the arm follows joint-trajectory waypoints, the
+    # diff drive integrates wheel odometry that the EKF then fuses at its own
+    # rate, and the grasp check reads a finger position that moves over hundreds
+    # of milliseconds. Raise it back if arm tracking ever looks coarse.
+    update_rate: 50  # Hz
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
     arm_controller:

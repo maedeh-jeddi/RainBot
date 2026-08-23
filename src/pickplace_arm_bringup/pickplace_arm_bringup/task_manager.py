@@ -41,6 +41,7 @@ LIDAR still sees the others and its local costmap still plans around them; that
 handles incidental encounters in a corridor, which no schedule can predict.
 """
 import math
+import os
 import sys
 import threading
 import time
@@ -58,10 +59,14 @@ from pickplace_arm_bringup.fleet_layout import ROBOTS, parking_vertices
 from pickplace_arm_bringup import rack_table_layout as RT
 
 # Seconds between one robot leaving reception and the next being dispatched.
-# 25 s is a little over the time the measured runs took to clear the triangle
-# and commit to a direction; shorter risks the collision this exists to prevent,
-# and longer only idles robots that have 30-40 m to drive anyway.
-DEPART_STAGGER = 25.0
+#
+# 12, down from 25. What this has to buy is that the departing robot is clear of
+# the formation before the next one starts turning -- and since robots now leave
+# SOUTHERNMOST FIRST (see dispatch), the one leaving is never driving between two
+# parked ones, which is what the long stagger was really guarding against.
+# Measured, a robot clears the triangle and commits to a heading in about eight
+# seconds.
+DEPART_STAGGER = float(os.environ.get('FLEET_DEPART_STAGGER', 12.0))
 
 COLOUR_RGBA = {'red': (0.9, 0.05, 0.05, 1.0),
                'green': (0.05, 0.7, 0.05, 1.0),
@@ -390,9 +395,11 @@ def main():
     ex.add_node(node)
     threading.Thread(target=ex.spin, daemon=True).start()
     try:
-        # Give the mission nodes time to construct and subscribe before the
-        # first task goes out.
-        time.sleep(8.0)
+        # NO FIXED SLEEP HERE. It used to wait 8 s for the mission nodes to
+        # construct and subscribe; the task topic is latched (transient local),
+        # so a node that subscribes later still receives its errand, and
+        # wait_ready() below already refuses to dispatch to a robot that is not
+        # localised. A constant that guards nothing is just delay.
         node.dispatch()
         while rclpy.ok() and not node.all_done():
             time.sleep(2.0)

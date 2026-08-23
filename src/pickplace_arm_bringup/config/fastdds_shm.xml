@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  FastDDS profile for the FLEET: shared memory for data, UDPv4 for discovery.
+
+  WHY THIS EXISTS ALONGSIDE fastdds_udp_only.xml.
+
+  That profile turns shared memory OFF, and its own note explains why it was
+  safe to: "Everything here is on one host over loopback, so the throughput cost
+  is not a concern." That was written for ONE robot, and for one robot it is
+  true. It stops being true at three.
+
+  Measured with three robots running the delivery job:
+
+      /tf                76 Hz, 419 transforms/s, 29 SUBSCRIBERS
+      robot_state_publisher   53% of a core EACH
+      ekf_node                56% of a core EACH
+      one-minute load         39 on 16 cores
+
+  Without shared memory every one of those /tf messages is serialised and sent
+  twenty-nine separate times through the loopback UDP stack, and the same is
+  true of each robot's 480x480 RGB-D point cloud. The receivers then deserialise
+  every copy. That is why nodes which compute almost nothing -- forward
+  kinematics, a fifteen-state filter -- were burning half a core apiece, and why
+  Nav2's own nodes started timing out acknowledging each other's goals.
+
+  SHM is listed FIRST so local traffic takes it; UDPv4 stays listed because
+  shared memory cannot carry multicast discovery, and because a participant that
+  cannot reach a peer over SHM needs a way through.
+
+  THE FAILURE THAT ORIGINALLY MOTIVATED DISABLING SHM IS REAL, and worth knowing
+  how to clear rather than avoiding forever:
+
+      RTPS_TRANSPORT_SHM Error: Failed init_port fastrtps_port<N>:
+          open_and_lock_file failed
+
+  It comes from stale segment files left in /dev/shm by processes that were
+  killed rather than shut down -- which, in this project, is every teardown. The
+  remedy is to remove them while no ROS process is running:
+
+      rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_*
+
+  If a participant ever hangs on "Waiting messages on topic
+  [/robot_description]", that is the symptom, and the line above is the fix.
+  Falling back to config/fastdds_udp_only.xml also works and costs only speed.
+
+  The segment is sized for the biggest thing that goes through it: a 480x480
+  organised point cloud is about 2.5 MB, and several can be in flight at once.
+-->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>shm_transport</transport_id>
+        <type>SHM</type>
+        <segment_size>67108864</segment_size>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>udp_transport</transport_id>
+        <type>UDPv4</type>
+      </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="shm_and_udp_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>shm_transport</transport_id>
+          <transport_id>udp_transport</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

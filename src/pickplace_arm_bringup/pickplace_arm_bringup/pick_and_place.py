@@ -1029,12 +1029,6 @@ class PickAndPlace(Node):
         # it cannot.
         self.move_pose(bx, by, grasp_z + WELD_CLEARANCE, 0.0, cartesian=True,
                        label='break contact', quat_xyzw=zdown_quat(0.0))
-        # Straight up by at least LIFT_CLEARANCE above the grasp, so the payload
-        # is unambiguously off its surface before the carry move takes it
-        # sideways. max() keeps the box picks at exactly the old READY_Z.
-        lift_z = max(READY_Z, grasp_z + LIFT_CLEARANCE)
-        self.move_pose(bx, by, lift_z, 0.0, cartesian=True,
-                       label='claw lift', quat_xyzw=zdown_quat(0.0))
 
         # THE ONLY HONEST LOOK AT THE FINGERS IS BEFORE THE WELD.
         #
@@ -1047,7 +1041,7 @@ class PickAndPlace(Node):
         # commanded gap rather than the world. Ask while the GRIP_CLOSED command
         # still makes the gap mean something.
         if not self.grasp_is_holding():
-            log.warn('[claw] box slipped during break-contact/lift')
+            log.warn('[claw] box slipped during break-contact')
             self.arm.detach_collision_object(BOX_ID)
             self.arm.remove_collision_object(BOX_ID)
             self.gripper(GRIP_OPEN, 'release-after-slip')
@@ -1072,10 +1066,27 @@ class PickAndPlace(Node):
         # and 0.184 m up, i.e. sitting on the robot's front deck, where the weld
         # then pinned it.
         #
-        # Here satisfies both: LIFT_CLEARANCE of clear air under the payload, so
-        # there is no loop to close, and the weld already made before the carry
-        # move, so friction is never asked to survive it.
+        # Here satisfies both: WELD_CLEARANCE of clear air under the payload, so
+        # there is no loop to close, and the weld made before ANY further motion,
+        # so friction is asked to survive only that one short break-contact hop.
+        #
+        # THE WELD USED TO COME AFTER THE FULL LIFT, and that cost a pick. The
+        # payload rode on friction for the 0.06 m break-contact hop AND the
+        # 0.12 m climb to the lift height -- and a rack is a pendulum, held by a
+        # 0.06 m block at the top of a body whose mass hangs 0.17 m below.
+        # Observed: "[claw] box held between the jaws", then the lift, then
+        # "[claw] box slipped during break-contact/lift". Welding here cuts the
+        # friction-only travel in half and puts it entirely in the one move that
+        # is straight up and slow.
         self.attach_box(color)
+
+        # NOW the lift, with the payload rigidly attached. Straight up by at
+        # least LIFT_CLEARANCE above the grasp so it is unambiguously clear of
+        # its surface before the carry move takes it sideways. max() keeps the
+        # box picks at exactly the old READY_Z.
+        lift_z = max(READY_Z, grasp_z + LIFT_CLEARANCE)
+        self.move_pose(bx, by, lift_z, 0.0, cartesian=True,
+                       label='claw lift', quat_xyzw=zdown_quat(0.0))
 
         cx, cy, _ = CARRY_POSITION
         cz = GROUND_Z + carry_height(self.PAYLOAD_GRIP_HEIGHT)

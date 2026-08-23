@@ -77,19 +77,35 @@ class DeliveryMission(Mission2Hospital):
     # grasped feature above the payload's own underside.
     DELIVERY_PLACE_Z = GROUND_Z + RT.TABLE_TOP + RT.RACK_GRIP_HEIGHT
 
-    # HOW FAR AHEAD THE ARM MAY PLACE, AT THIS HEIGHT.
+    # THE REACH LIMIT IS A SPHERE, NOT A NUMBER, and treating it as a number is
+    # what broke the placement.
     #
-    # MAX_REACH_X (0.85) is derived for the FLOOR: fr3_link0 sits 0.3837 m up,
-    # so at the FR3's 0.855 m reach the floor is only reachable out to a 0.764 m
-    # horizontal radius about the arm base. A delivery slot is not on the floor
-    # -- it is 0.494 m up, i.e. only 0.110 m above the arm base -- so the
-    # horizontal radius available there is sqrt(0.855^2 - 0.110^2) = 0.848 and
-    # the reachable x is 0.928. Using the floor's cap here would refuse
-    # placements the arm can comfortably make.
+    # A first version capped x at 0.88, worked out for a slot straight ahead at
+    # the PLACE height. Both assumptions fail in practice. The robot does not
+    # arrive perfectly centred, so the slot carries a lateral offset -- measured
+    # 0.22 m on one run -- and the arm's first move is not to the place height
+    # but to the OVER-slot waypoint above it. Together those put the commanded
+    # pose at (0.88, -0.22, 0.43), which is 0.849 m from the arm base: 99.3% of
+    # the FR3's 0.855 m reach, i.e. fully extended, and MoveIt returned
+    # NO_IK_SOLUTION exactly as it should.
     #
-    # 0.88 is that geometry at about 94% of full reach, which keeps the elbow off
-    # the singular fully-extended configuration where seeded IK starts failing.
-    DELIVERY_MAX_REACH_X = 0.88
+    # So the cap is computed per placement from the ACTUAL y and z, against a
+    # reach budget that keeps the elbow off the singularity.
+    ARM_BASE_X = 0.0799          # fr3_link0 ahead of base_link
+    ARM_BASE_Z = GROUND_Z + 0.3837
+    ARM_REACH = 0.855
+    # 0.93 of full extension. Seeded IK starts failing well before 1.0, and the
+    # cost of being conservative is a few centimetres of placement error on a
+    # table 0.668 m deep.
+    ARM_REACH_FRACTION = 0.93
+
+    def _max_x_for(self, py, pz):
+        """Largest base_link x the arm can reach at this y and z, or None."""
+        budget = (self.ARM_REACH * self.ARM_REACH_FRACTION) ** 2 \
+            - py ** 2 - (pz - self.ARM_BASE_Z) ** 2
+        if budget <= 0.0:
+            return None
+        return self.ARM_BASE_X + math.sqrt(budget)
 
     def __init__(self):
         super().__init__()
@@ -244,12 +260,73 @@ class DeliveryMission(Mission2Hospital):
                      f'({prev[0]:+.3f},{prev[1]:+.3f})')
         return prev
 
+    def _close_in_on(self, slot_xy, px):
+        """Drive forward so the slot lands inside the arm's reach, using NAV2.
+
+        The obvious tool is _creep_forward, which measures on odom and is what
+        the column placement uses. It does not work here: measured twice, it
+        published cmd_vel for its full 25 s timeout and the base moved 0.000 m,
+        while an external publisher on the identical topic moved the same robot
+        0.71 m in six seconds. The publisher is matched (ros2 topic info -v
+        lists this node on that topic, QoS compatible) so the cause is still
+        open -- but the fix does not have to wait for the explanation.
+
+        Nav2 demonstrably drives this robot, and it has the costmap, so it will
+        not push the chassis into the table the way an open-loop creep could.
+        The goal is the robot's own believed pose advanced along its own
+        heading by exactly the shortfall.
+        """
+        log = self.get_logger()
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                'map', self.tf_frame('base_link'), rclpy.time.Time(),
+                timeout=RclDuration(seconds=2.0))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            log.error(f'[{self.ns}] map <- base_link failed: {e}')
+            return False
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        # Aim to leave the slot comfortably inside the cap rather than exactly
+        # at it, so AMCL's own error does not put it back outside.
+        advance = px - 0.78
+        gx = t.x + advance * math.cos(yaw)
+        gy = t.y + advance * math.sin(yaw)
+        log.info(f'[{self.ns}] slot is {px:.3f} m ahead -- moving up '
+                 f'{advance:.2f} m to ({gx:+.2f},{gy:+.2f})')
+        return self.navigate_to(self.make_map_goal(gx, gy, yaw))
+
     def place_in_slot(self, slot_index, slot_xy):
         """Put the carried rack down in `slot_xy` (map frame) and let go."""
         log = self.get_logger()
-        target = self._settled_slot(slot_xy)
-        if target is None:
-            return False
+        target = None
+        for attempt in range(3):
+            target = self._settled_slot(slot_xy)
+            if target is None:
+                return False
+            # Checked against the OVER-slot waypoint, which is the higher and
+            # therefore tighter of the two poses the arm has to make.
+            over_z = self.DELIVERY_PLACE_Z + BOX_SIZE / 2.0 + 0.04
+            cap = self._max_x_for(target[1], over_z)
+            if cap is not None and target[0] <= cap:
+                break
+            # OUT OF REACH IS RECOVERABLE, and worth recovering rather than
+            # clamping. Nav2 stops within its own 0.20 m tolerance and AMCL
+            # carries another 0.15, so a robot can legitimately arrive half a
+            # metre short of where it meant to stand -- measured, one read the
+            # slot at 1.306 m when the standoff should have put it at 0.85.
+            # Clamping there would set the rack down 0.43 m short of the table.
+            if attempt == 2:
+                log.warn(f'[{self.ns}] still {target[0]:.3f} m out after '
+                         f'{attempt + 1} approaches (reachable to '
+                         f'{cap if cap is None else round(cap, 3)}) -- '
+                         f'placing at the cap')
+                break
+            if not self._close_in_on(slot_xy, target[0]):
+                log.warn(f'[{self.ns}] could not move up to the table')
+                break
         px, py = target
         log.info(f'[{self.ns}] slot {slot_index} is at base_link '
                  f'({px:+.3f},{py:+.3f})')
@@ -269,11 +346,17 @@ class DeliveryMission(Mission2Hospital):
         # of the slot and 0.33 m behind, so a 0.05 m error still lands it
         # squarely on the top. Refusing outright, by contrast, means a robot
         # standing at the table holding a rack it will not put down.
-        if px > self.DELIVERY_MAX_REACH_X:
-            log.warn(f'[{self.ns}] slot {slot_index} reads {px:.3f} m ahead, past '
-                     f'the {self.DELIVERY_MAX_REACH_X:.2f} m reach at this '
-                     f'height -- placing at the cap, {px - self.DELIVERY_MAX_REACH_X:.3f} m short')
-            px = self.DELIVERY_MAX_REACH_X
+        over_z = self.DELIVERY_PLACE_Z + BOX_SIZE / 2.0 + 0.04
+        cap = self._max_x_for(py, over_z)
+        if cap is None:
+            log.error(f'[{self.ns}] slot {slot_index} is {py:+.3f} m to the side '
+                      f'-- outside the arm envelope at any distance')
+            return False
+        if px > cap:
+            log.warn(f'[{self.ns}] slot {slot_index} reads {px:.3f} m ahead at '
+                     f'y={py:+.3f}; the arm reaches {cap:.3f} m there -- placing '
+                     f'at the cap, {px - cap:.3f} m short')
+            px = cap
 
         # Over the slot, then straight down onto the top. The over-height clears
         # the tray by the same margin a column placement uses.
