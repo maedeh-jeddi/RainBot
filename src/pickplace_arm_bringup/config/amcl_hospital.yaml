@@ -35,7 +35,39 @@ amcl:
       yaw: 1.5707963
 
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
-    laser_model_type: "likelihood_field"
+    # likelihood_field_prob, not likelihood_field, FOR ONE REASON: it is the
+    # only laser model in AMCL that can SKIP BEAMS, and this map is deliberately
+    # incomplete in exactly the way beam skipping exists to handle.
+    #
+    # maps/aws_hospital.pgm is stamped from the building's collision geometry
+    # plus the four static tables. The racks are deliberately NOT in it (see
+    # hospital_mission.launch.py: "an obstacle where a prop no longer is, is
+    # worse than one that was never drawn"), and neither are the other two
+    # robots. So whenever a robot is at a table -- which is exactly where it
+    # needs its pose to be good -- a chunk of its scan is returning off objects
+    # the map does not contain, and plain likelihood_field weighs every one of
+    # those beams as evidence against the correct pose.
+    #
+    # likelihood_field_prob computes a proper per-beam probability and, with
+    # do_beamskip on, drops beams that most particles agree cannot be explained
+    # by the map at all -- which is precisely the signature of an unmapped rack
+    # or a second robot, and not of being in the wrong place. It costs slightly
+    # more arithmetic per beam and is worth it here.
+    #
+    # This also prepares the ground for the dynamic obstacles that are still to
+    # come: a moving person is the same problem as an unmapped rack, larger.
+    # REQUIRED BY map_pump, not a preference. That node re-publishes /map
+    # during bring-up so a robot whose subscription missed the single
+    # latched sample still gets one -- and nav2_amcl does NOT ignore a
+    # repeat: its map callback rebuilds the likelihood field and re-seeds
+    # the particle filter from the initial pose. Without this flag the pump
+    # would reset the localization of a robot half way through its errand.
+    first_map_only: true
+    laser_model_type: "likelihood_field_prob"
+    do_beamskip: true
+    beam_skip_distance: 0.5
+    beam_skip_threshold: 0.3
+    beam_skip_error_threshold: 0.9
     # 25.0, matching the LIDAR's own range in pickplace_arm.gazebo.xacro (see
     # the long note there). AMCL DISCARDS RETURNS BEYOND THIS VALUE, so leaving
     # it at the warehouse's 8.0 would throw away precisely the long beams that
@@ -45,6 +77,19 @@ amcl:
     # than how it weighs it.
     laser_max_range: 25.0
     laser_min_range: 0.15
+    # 90. THIS WAS RAISED TO 180 FOR A REASON THAT TURNED OUT NOT TO EXIST.
+    #
+    # The justification was a 2.4-2.8 m error "while driving" that collapsed at
+    # every stop. That error was an artifact of the measuring tool, not the
+    # filter: the ground truth came from `gz model -m <ns> -p`, which takes 5.1 s
+    # per call, so a moving robot was being compared against a five-second-old
+    # position and looked wrong by speed x 5 s. The giveaway was that amcl always
+    # read AHEAD along the path -- a stale transform lags behind.
+    #
+    # Doubling the beams therefore bought nothing and cost a great deal:
+    # likelihood_field_prob with beam skipping is the expensive model, and at 180
+    # beams each robot's amcl sat at 50% of a core, 150% across the fleet, on a
+    # machine whose bring-up was already failing for want of CPU.
     max_beams: 90
     min_particles: 500
     max_particles: 2000
@@ -61,8 +106,17 @@ amcl:
     sigma_hit: 0.2
     laser_likelihood_max_dist: 2.0
 
-    update_min_a: 0.2
-    update_min_d: 0.25
+    # A filter that only corrects every 0.25 m spends most of a 0.55 m/s drive
+    # running on odometry alone. Halving both makes it correct about twice as
+    # often for the same distance travelled, which is the other half of the
+    # tracking problem described above.
+    # 0.10 / 0.12, back up from 0.05 / 0.05. These were halved twice chasing
+    # the same phantom error described above, and each halving doubles how often
+    # the filter runs. 0.12 m still corrects roughly four times over the
+    # distance the old 0.25 did once, which is ample -- and it stays well inside
+    # the motion the relocalize spin produces when a robot has to recover.
+    update_min_a: 0.10
+    update_min_d: 0.12
     resample_interval: 1
     transform_tolerance: 1.0
     recovery_alpha_slow: 0.0

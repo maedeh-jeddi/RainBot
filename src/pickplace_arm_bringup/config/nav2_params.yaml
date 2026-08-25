@@ -1,8 +1,9 @@
 # Nav2 parameters for the pickplace_arm 4-wheel skid-steer mobile base.
 # Robot footprint approximated as a 0.25 m radius circle (covers the
 # 0.38x0.26 m chassis plus the wheels that protrude past it). Uses the
-# RegulatedPurePursuitController, which is robust for differential/skid-steer
-# drives. SLAM (slam_toolbox) supplies map -> odom, so AMCL is not used.
+# MPPI controller with the DiffDrive motion model, and the Smac 2D global
+# planner. SLAM (slam_toolbox) supplies map -> odom for the single-robot
+# launches; the hospital fleet runs AMCL instead (config/amcl_hospital.yaml).
 
 bt_navigator:
   ros__parameters:
@@ -80,55 +81,171 @@ controller_server:
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
 
+    # SIZED FOR THE LAST HALF METRE, NOT THE FIRST FORTY. SimpleProgressChecker
+    # aborts unless the robot covers required_movement_radius within
+    # movement_time_allowance, and at 0.5 m / 10 s that is a demand a robot
+    # doing its final approach CANNOT meet: it is already inside 0.25 m of the
+    # goal, so there is not 0.5 m left to travel. Measured with MPPI driving,
+    # r2 sat 0.25 m off the delivery standoff nudging itself in and was aborted
+    # 43 times in a row, while r1 and r3 -- neither of which had reached the
+    # table yet -- tripped it zero times.
+    #
+    # RPP hid this because it drove the last stretch at speed and either hit the
+    # tolerance or gave up; MPPI converges gradually, which is what makes it
+    # better at docking and what makes the old threshold wrong. 0.10 m over 20 s
+    # still catches a genuinely wedged robot -- one that is stuck moves nothing
+    # at all -- without punishing one that is merely being careful.
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      required_movement_radius: 0.10
+      movement_time_allowance: 20.0
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
-      xy_goal_tolerance: 0.20
+      # 0.35, up from 0.20. THIS TOLERANCE IS COMPARED AGAINST AMCL'S ESTIMATE,
+      # NOT AGAINST THE WORLD, and that is the whole reason it has to be this
+      # loose. Measured with r3 parked at the delivery standoff:
+      #
+      #     true pose     (-3.485, 10.988)   0.049 m from the goal
+      #     AMCL estimate (-3.225, 11.024)   0.275 m from the goal
+      #
+      # The robot had arrived -- 5 cm out, heading within 0.012 rad -- and the
+      # goal checker refused it, because AMCL's own 0.26 m residual put its
+      # believed position just outside a 0.25 m circle. MPPI then nudged at the
+      # goal line until the progress checker aborted, three times over, while
+      # the robot sat still. A tolerance tighter than the localisation error is
+      # not a precision setting, it is a deadlock.
+      #
+      # 0.26 m is ordinary for AMCL and not a defect to tune away, so the
+      # tolerance accommodates it. Nothing downstream needs 20 cm anyway: at a
+      # collection table claw_approach visually servos onto the rack from
+      # wherever the robot stopped, and at the delivery table place_in_slot
+      # re-reads the slot and calls _close_in_on when it is out of arm's reach.
+      xy_goal_tolerance: 0.35
       # Loose heading tolerance: the robot doesn't need to nail an exact final
       # yaw (the visual servo re-centres on the box, and delivery/parking don't
       # care which way it faces). A tight yaw made the skid-steer oscillate in
       # place around the goal heading, which tripped Nav2's recovery Spin.
       yaw_goal_tolerance: 0.5
 
+    # MPPI, NOT RegulatedPurePursuit. RPP follows a path; it does not choose
+    # one. It has a single collision check along the carrot and its only
+    # response to an obstacle is to slow down and eventually give up, which is
+    # why obstacle handling in this fleet has been "Nav2 aborts, the mission
+    # retries". MPPI rolls out a batch of candidate trajectories every cycle and
+    # scores them against the costmap, so avoiding something is an ordinary
+    # outcome of control rather than a failure of it -- and it stays that way
+    # when the dynamic obstacles arrive, which RPP would not.
+    #
+    # SIZED FOR THREE ROBOTS ON ONE MACHINE. The defaults are batch_size 2000
+    # and time_steps 56, and three of those at 20 Hz is not affordable here --
+    # this fleet has already lost whole missions to nav2_lifecycle_manager
+    # missing 2 s deadlines under load. 1000 x 36 keeps a 36 x 0.05 x 0.55 =
+    # 0.99 m horizon, which is longer than the 0.55 m/s robot needs to stop.
     FollowPath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.55
-      lookahead_dist: 0.5
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.8
-      lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 1.6
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 36
+      model_dt: 0.05
+      batch_size: 1000
+      iteration_count: 1
+      # vy is pinned to zero and stays there: this is a skid-steer, and the
+      # DiffDrive motion model is what makes MPPI stop proposing sideways
+      # motion it cannot execute.
+      motion_model: "DiffDrive"
+      vx_std: 0.2
+      vy_std: 0.0
+      wz_std: 0.4
+      vx_max: 0.55
+      vx_min: -0.35
+      vy_max: 0.0
+      wz_max: 1.9
+      prune_distance: 1.7
       transform_tolerance: 0.2
-      use_velocity_scaled_lookahead_dist: false
-      min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.6
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
-      use_cost_regulated_linear_velocity_scaling: false
-      regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.25
-      use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 3.5
-      max_robot_pose_search_dist: 10.0
+      temperature: 0.3
+      gamma: 0.015
+      regenerate_noises: false
+      # Off deliberately: publishing candidate trajectories is a per-cycle
+      # marker array per robot, and nothing reads it in a headless run.
+      visualize: false
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      AckermannConstraints:
+        min_turning_r: 0.0
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
+                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
+                "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      # CostCritic rather than ObstaclesCritic: it reads the costmap's own
+      # inflation gradient, so the robot is pushed away from obstacles
+      # continuously instead of only when a footprint check trips.
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: false
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.4
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        forward_preference: true
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
 
 local_costmap:
   local_costmap:
     ros__parameters:
       use_sim_time: true
-      update_frequency: 5.0
+      # 10 Hz and 6 m square, up from 5 Hz and 4 m. MPPI rolls out a ~1 m
+      # horizon 20 times a second and scores it against THIS grid, so a window
+      # that only refreshes every 200 ms is the limiting factor on how late an
+      # obstacle can appear and still be avoided. 6 m leaves margin around the
+      # rollouts at the window edge; 120x120 cells is cheap.
+      update_frequency: 10.0
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
-      width: 4
-      height: 4
+      width: 6
+      height: 6
       resolution: 0.05
       robot_radius: 0.25
       plugins: ["obstacle_layer", "inflation_layer"]
@@ -149,7 +266,18 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.30
+        # 0.45, up from 0.30. This is what gives Smac 2D's cost_travel_multiplier
+        # and MPPI's CostCritic a gradient to work with -- at 0.30 the cost fell
+        # to zero almost as soon as the robot cleared the obstacle, so "keep
+        # clear of the wall" was not expressible.
+        #
+        # RAISING IT DOES NOT ENDANGER THE TIGHT STANDOFFS, which is the obvious
+        # worry: what a planner refuses to enter is the INSCRIBED zone, and that
+        # is set by robot_radius (0.25), not by this. Beyond 0.25 m inflation
+        # only adds cost. The delivery standoff sits 0.70 m from the table's
+        # lethal cells and stays traversable; measured on the running stack, the
+        # cost there is 0.
+        inflation_radius: 0.65 #0.45
       always_send_full_costmap: true
 
 global_costmap:
@@ -184,19 +312,58 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.30
+        # 0.45, up from 0.30. This is what gives Smac 2D's cost_travel_multiplier
+        # and MPPI's CostCritic a gradient to work with -- at 0.30 the cost fell
+        # to zero almost as soon as the robot cleared the obstacle, so "keep
+        # clear of the wall" was not expressible.
+        #
+        # RAISING IT DOES NOT ENDANGER THE TIGHT STANDOFFS, which is the obvious
+        # worry: what a planner refuses to enter is the INSCRIBED zone, and that
+        # is set by robot_radius (0.25), not by this. Beyond 0.25 m inflation
+        # only adds cost. The delivery standoff sits 0.70 m from the table's
+        # lethal cells and stays traversable; measured on the running stack, the
+        # cost there is 0.
+        inflation_radius: 0.65 #0.45
       always_send_full_costmap: true
 
 planner_server:
   ros__parameters:
     use_sim_time: true
-    expected_planner_frequency: 20.0
+    # 5.0, matching what Smac 2D actually achieves on a 540x1160 costmap
+    # (measured: 4.5 Hz). This is only the threshold for the 'planner loop
+    # missed its rate' warning -- the behaviour tree replans at 1 Hz -- so
+    # the old 20.0 bought nothing but a warning per plan.
+    expected_planner_frequency: 5.0
     planner_plugins: ["GridBased"]
+    # SmacPlanner2D, not NavFn. Both are grid planners and either can express
+    # a differential-drive route -- a robot that turns in place has no
+    # kinematic constraint for a planner to respect, which is also why the
+    # Hybrid-A* and State Lattice planners are the wrong tools here: they exist
+    # to honour a turning radius this robot does not have, and they cost
+    # considerably more to run.
+    #
+    # What Smac 2D adds over NavFn is cost_travel_multiplier: it prices travel
+    # through inflated cells, so the route keeps clearance from walls and
+    # tables instead of shaving them the way NavFn's pure shortest path does.
+    # That is the half of obstacle avoidance the controller cannot fix, because
+    # by the time MPPI sees a path hugging a doorway its only options are all
+    # bad ones.
     GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
+      plugin: "nav2_smac_planner/SmacPlanner2D"
       tolerance: 0.5
-      use_astar: false
       allow_unknown: true
+      downsample_costmap: false
+      downsampling_factor: 1
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
 
 smoother_server:
   ros__parameters:

@@ -244,8 +244,22 @@ def _robot_group(idx, ns, arm, nav):
         # robots' pairs put ~600 MB/s through DDS and starved the visual servo.
         # A display here for a topic nobody publishes is not an error, but it
         # is a promise the simulation cannot keep, so r3 and r4 get none.
+        # THE FRONT CAMERA SHIPS OFF, and it is the one display here whose
+        # default was actually measured rather than guessed. Three 480x480
+        # streams decoded and drawn every frame cost rviz2 120% of a core;
+        # with just these three boxes unticked the same config costs 20%.
+        #
+        # That core is not spare. The fleet already runs three Nav2 stacks and
+        # three EKFs against one Gazebo server, and nav2_lifecycle_manager
+        # hardcodes 2 s deadlines: on the run that motivated this the machine
+        # reached a load of 45 and ALL THREE robots picked their rack and then
+        # failed with "could not reach the delivery table" -- a mission lost to
+        # a debugging view nobody was looking at.
+        #
+        # Ticking the box costs nothing when the machine is idle and the robots
+        # are parked, which is exactly when someone wants to look at a camera.
         displays += [
-            _image(f'{ns} front camera', f'/{ns}/front_camera/image', True),
+            _image(f'{ns} front camera', f'/{ns}/front_camera/image', False),
             _image(f'{ns} wrist camera', f'/{ns}/camera/image', False),
             _cloud(f'{ns} front cloud', f'/{ns}/front_camera/points', False),
             _cloud(f'{ns} wrist cloud', f'/{ns}/camera/points', False),

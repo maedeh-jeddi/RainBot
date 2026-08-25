@@ -48,6 +48,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rosidl_runtime_py.utilities import get_message
 from rclpy.utilities import remove_ros_args
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
@@ -84,6 +85,10 @@ class WaitFor(Node):
             self.buf = tf2_ros.Buffer()
             self.listener = tf2_ros.TransformListener(self.buf, self)
         self.tf_ok = not args.tf
+        # Topics are ready only once a message has ARRIVED on each --
+        # see _topics_ready for why a publisher count is not enough.
+        self._topic_seen = set()
+        self._topic_subs = {}
         self._tf_seen = set()
 
         self.create_timer(0.25, self._tick)
@@ -143,10 +148,45 @@ class WaitFor(Node):
         return True
 
     def _topics_ready(self):
+        """A topic counts as ready when a MESSAGE has actually arrived on it.
+
+        This used to be `count_publishers(t) > 0`, which is cheap and wrong.
+        ROS 2's graph keeps announcing publishers belonging to participants that
+        have died until their lease expires, and this project kills its
+        processes rather than shutting them down, so the count is haunted:
+        measured, /r1/nav_ready reported "Publisher count: 2" with both entries
+        showing _NODE_NAME_UNKNOWN_ while r1's nav_bringup had never succeeded
+        and never created a publisher at all.
+
+        That is not a cosmetic difference. The gates that guard the arms and the
+        mission are the fleet's only "everything is really up" check, and a
+        ghost satisfied them: the mission was released with r1 dead, then
+        dispatched it an errand it could not drive.
+
+        Waiting for a real message cannot be faked by a stale announcement. The
+        type is looked up from the graph so the gate still does not need to know
+        it in advance.
+        """
+        ready = True
         for t in self.args.topic:
-            if not self.count_publishers(t):
-                return False
-        return True
+            if t in self._topic_seen:
+                continue
+            ready = False
+            if t not in self._topic_subs:
+                types = dict(self.get_topic_names_and_types()).get(t)
+                if not types:
+                    continue                 # not advertised yet
+                try:
+                    msg_cls = get_message(types[0])
+                except Exception:            # type not resolvable yet
+                    continue
+                # BEST_EFFORT so this matches a publisher of either
+                # reliability; a RELIABLE writer still satisfies it.
+                qos = QoSProfile(depth=1,
+                                 reliability=ReliabilityPolicy.BEST_EFFORT)
+                self._topic_subs[t] = self.create_subscription(
+                    msg_cls, t, lambda _m, k=t: self._topic_seen.add(k), qos)
+        return ready
 
     def _services_ready(self):
         names = {n for n, _ in self.get_service_names_and_types()}

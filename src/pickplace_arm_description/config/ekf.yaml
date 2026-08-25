@@ -5,7 +5,18 @@
 ekf_filter_node:
   ros__parameters:
     use_sim_time: true
-    frequency: 30.0
+    # 20 Hz, down from 30. NOT a threading fix -- measured, nothing in this
+    # system is single-thread bound (busiest thread 61% of a core) and the CPU
+    # is 97% busy with 39% SYSTEM time plus 7.7% softirq, i.e. nearly half of
+    # all CPU is the kernel's network stack. That is UDP loopback DDS traffic,
+    # and the way to reduce it is fewer messages, not more threads.
+    #
+    # /tf is the biggest single contributor: 42 Hz across 12 publishers into 29
+    # subscribers, so every transform is delivered ~29 times through loopback.
+    # Three EKFs publishing odom->base_link are a third of those publishers, and
+    # 20 Hz is still above what consumes it -- Nav2's controller runs at 20 Hz
+    # and the base tops out at 0.55 m/s, so a cycle is under 3 cm of travel.
+    frequency: 20.0
     sensor_timeout: 0.2
     two_d_mode: true            # planar robot: zero out z/roll/pitch
     publish_tf: true

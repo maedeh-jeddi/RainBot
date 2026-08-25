@@ -18,9 +18,16 @@ either got anywhere. Sent one at a time, all three complete the identical routes
 So this is a coordination problem, and it is solved where coordination belongs --
 in the one node that can see all three robots at once. Two rules do it:
 
-  DEPARTURE STAGGER  robots leave reception DEPART_STAGGER seconds apart, which
-                     is enough for the previous one to clear the triangle before
-                     the next one starts turning.
+  DEPARTURE STAGGER  depart_stagger seconds between departures -- 20 by
+                     all three leave together and their three errands overlap
+                     end to end. See the constant for what had to change in the
+                     controller before that was safe.
+
+  DELIVERY QUEUE     one reserved waiting spot per robot, 1.4 m behind the
+                     delivery standoff, so all three make the trip as soon as
+                     they are carrying and wait AT the table rather than at
+                     their collection benches. See
+                     rack_table_layout.delivery_queue().
 
   DELIVERY LOCK      only one robot may be working at the delivery table at a
                      time. Its standoff, the creep in and the arm placement all
@@ -60,13 +67,21 @@ from pickplace_arm_bringup import rack_table_layout as RT
 
 # Seconds between one robot leaving reception and the next being dispatched.
 #
-# 12, down from 25. What this has to buy is that the departing robot is clear of
-# the formation before the next one starts turning -- and since robots now leave
-# SOUTHERNMOST FIRST (see dispatch), the one leaving is never driving between two
-# parked ones, which is what the long stagger was really guarding against.
-# Measured, a robot clears the triangle and commits to a heading in about eight
-# seconds.
-DEPART_STAGGER = float(os.environ.get('FLEET_DEPART_STAGGER', 12.0))
+# TWENTY, AND IT IS A LAUNCH ARGUMENT, NOT A CONSTANT TO EDIT:
+#
+#     ros2 launch pickplace_arm_bringup hospital_mission.launch.py \
+#         depart_stagger:=20.0
+#
+# This has been 25, then 12, then 0, and back to 20 -- which is the point of
+# making it an argument. Zero was tried because the errands are meant to overlap,
+# and they still do: the stagger only separates the DEPARTURES, and the routes
+# are 29 to 40 m long, so the robots spend almost the whole run spread out
+# anyway. What the separation buys is the two moments they are all in one place
+# -- leaving the reception triangle, and arriving at the one delivery standoff.
+#
+# The value below is only the fallback for running this node by hand; the launch
+# file passes the real one as a ROS parameter.
+DEFAULT_DEPART_STAGGER = float(os.environ.get('FLEET_DEPART_STAGGER', 20.0))
 
 COLOUR_RGBA = {'red': (0.9, 0.05, 0.05, 1.0),
                'green': (0.05, 0.7, 0.05, 1.0),
@@ -76,6 +91,11 @@ COLOUR_RGBA = {'red': (0.9, 0.05, 0.05, 1.0),
 class TaskManager(Node):
     def __init__(self):
         super().__init__('task_manager')
+        # Overridable per launch: depart_stagger:=<seconds>. See
+        # DEFAULT_DEPART_STAGGER for what it is for.
+        self.declare_parameter('depart_stagger', DEFAULT_DEPART_STAGGER)
+        self.depart_stagger = float(
+            self.get_parameter('depart_stagger').value)
         self.robots = [ns for ns, *_ in ROBOTS]
         self.collections = RT.collection_points()
         self.slots = RT.delivery_slots()
@@ -88,6 +108,15 @@ class TaskManager(Node):
         self._park_owner = {}
         self._delivery_busy = None          # ns currently using the table
         self.status = {ns: ('waiting', '') for ns in self.robots}
+        # Robots whose rack reached the delivery table, regardless of how
+        # their errand ended afterwards. See _on_status.
+        self.delivered = set()
+        # Robots that have stopped on the holding ring, and robots whose errand
+        # is over either way. Both feed the rendezvous in _claim_slot.
+        self.holding = set()
+        self.finished = set()
+        # Placing order: r1, then r2, then r3 -- fleet order, not arrival order.
+        self.place_order = list(self.robots)
         self.assignment = {}
 
         # LATCHED, AND PUBLISHED ONCE. Sent as ordinary volatile messages this
@@ -134,13 +163,40 @@ class TaskManager(Node):
 
     # --- allocation -----------------------------------------------------------
     def _claim_slot(self, ns, res):
-        """THE FIRST AVAILABLE POSITION IN THE ROW, which is what makes the row
-        fill up left to right however the robots happen to arrive.
+        """Grant the table only when EVERY robot is holding, and then strictly
+        in fleet order: r1 places and parks, then r2, then r3.
 
-        This also takes the delivery lock: whoever holds a slot is the robot
-        using the table, and it is released when that robot reports 'delivered'.
+        TWO CONDITIONS, AND THE FIRST IS A RENDEZVOUS. A robot that reaches the
+        holding ring is refused until all the others have reached it too, so
+        nobody starts placing while another robot is still driving in. The
+        second is the order: the queue used to be first-come-first-served, which
+        made the row fill up in whatever sequence the drives happened to finish.
+
+        A ROBOT'S TURN ENDS WHEN IT HAS PARKED, not when it has placed. Releasing
+        on 'delivered' let the next robot drive in while the previous one was
+        still backing away from the standoff and turning for the lobby -- two
+        robots inside the same few metres, which is the collision this lock
+        exists to prevent.
+
+        Robots that have already finished -- or failed anywhere along the way --
+        are excluded from both conditions, so one failure cannot deadlock the
+        rest of the fleet behind a rendezvous that can never complete.
         """
         with self._lock:
+            self.holding.add(ns)
+            pending = [r for r in self.robots
+                       if r not in self.holding and r not in self.finished]
+            if pending:
+                res.success = False
+                res.message = (f'in use: waiting for {", ".join(pending)} to '
+                               f'reach the holding ring')
+                return res
+            turn = next((r for r in self.place_order
+                         if r not in self.finished), None)
+            if turn is not None and turn != ns:
+                res.success = False
+                res.message = f'in use by {turn} (placing in fleet order)'
+                return res
             if self._delivery_busy not in (None, ns):
                 res.success = False
                 res.message = f'delivery table in use by {self._delivery_busy}'
@@ -179,11 +235,27 @@ class TaskManager(Node):
         except ValueError:
             return
         self.status[ns] = (state, detail)
+        # REMEMBER THAT THE RACK GOT THERE, separately from how the errand
+        # ended. A robot that places its rack and then fails on the drive to
+        # its parking vertex HAS delivered; reporting it as "did not deliver"
+        # because its LAST status is 'failed' describes the wrong robot. That
+        # is exactly what the first version of the summary below did -- it
+        # credited r3, whose rack ended up on the floor, and blamed r1, whose
+        # rack was sitting on the table where it belonged.
+        if state == 'delivered':
+            self.delivered.add(ns)
         # Release the delivery table the moment the rack is down and the robot
         # has backed off -- not when it finishes parking, which would serialise
         # the whole fleet behind one robot's drive across the lobby.
-        if state in ('delivered', 'failed'):
+        if state == 'holding':
             with self._lock:
+                self.holding.add(ns)
+        # THE TURN ENDS AT 'done' OR 'failed' -- see _claim_slot. 'delivered'
+        # only means the rack is down; the robot is still at the standoff.
+        if state in ('done', 'failed'):
+            with self._lock:
+                self.finished.add(ns)
+                self.holding.discard(ns)
                 if self._delivery_busy == ns:
                     self._delivery_busy = None
                     self.get_logger().info(f'[manager] {ns} released the delivery table')
@@ -224,7 +296,12 @@ class TaskManager(Node):
         return False
 
     def dispatch(self):
-        """Give every robot an errand, staggered."""
+        """Give every robot an errand.
+
+        Departures are separated by the depart_stagger parameter; the
+        departure ORDER below still matters for the few seconds they are all in
+        the formation together.
+        """
         pairs = list(zip(self.robots, self.collections))
         for ns, (name, colour, table, rack, stand) in pairs:
             self.assignment[ns] = (name, colour)
@@ -250,21 +327,32 @@ class TaskManager(Node):
         self.get_logger().info('[manager] assignment: ' + ', '.join(
             f'{ns}->{c} at {n}' for ns, (n, c) in self.assignment.items()))
 
-        for i, (ns, (name, colour, table, rack, stand)) in enumerate(pairs):
-            if i:
-                self.get_logger().info(
-                    f'[manager] holding {ns} for {DEPART_STAGGER:.0f}s so '
-                    f'{pairs[i-1][0]} can clear the formation')
-                time.sleep(DEPART_STAGGER)
-            # Never hand work to a robot that cannot take it. Waiting here also
-            # means a slow third stack delays only its own errand rather than
-            # failing it.
-            if not self.wait_ready(ns):
+        # EVERY ROBOT IS CONFIRMED READY BEFORE ANY ROBOT IS SENT.
+        #
+        # wait_ready blocks until that robot's localization holds steady, and it
+        # used to be called inside the dispatch loop -- which meant a stack that
+        # took an extra thirty seconds to settle held up the errands of robots
+        # that had been sitting ready the whole time. With the stagger at zero
+        # that would have quietly reintroduced exactly the serialisation the
+        # zero is meant to remove, just keyed on bring-up time instead of a
+        # timer. Checking everyone first, then publishing, makes "at the same
+        # time" mean it.
+        ready = []
+        for ns, spec in pairs:
+            if self.wait_ready(ns):
+                self.get_logger().info(f'[manager] {ns} is ready')
+                ready.append((ns, spec))
+            else:
                 self.get_logger().error(
                     f'[manager] {ns} never became localized -- no errand for it')
                 self.status[ns] = ('failed', 'never localized')
-                continue
-            self.get_logger().info(f'[manager] {ns} is ready')
+
+        for i, (ns, (name, colour, table, rack, stand)) in enumerate(ready):
+            if i and self.depart_stagger > 0.0:
+                self.get_logger().info(
+                    f'[manager] holding {ns} for {self.depart_stagger:.0f}s so '
+                    f'{ready[i-1][0]} can clear the formation')
+                time.sleep(self.depart_stagger)
             msg = String()
             msg.data = '|'.join([
                 colour,
@@ -403,9 +491,18 @@ def main():
         node.dispatch()
         while rclpy.ok() and not node.all_done():
             time.sleep(2.0)
-        node.get_logger().info('[manager] every robot has finished:')
+        undelivered = [ns for ns in node.robots if ns not in node.delivered]
+        node.get_logger().info(
+            f'[manager] every robot has finished: {len(node.delivered)}/'
+            f'{len(node.robots)} racks delivered')
         for ns in node.robots:
-            node.get_logger().info(f'    {ns}: {node.status[ns][0]} {node.status[ns][1]}')
+            state, detail = node.status[ns]
+            note = '' if ns in node.delivered else '   (rack NOT delivered)'
+            node.get_logger().info(f'    {ns}: {state} {detail}{note}')
+        if undelivered:
+            node.get_logger().error(
+                f'[manager] MISSION INCOMPLETE -- no rack from '
+                f'{", ".join(undelivered)}')
         # Stay alive so the markers and the status board keep being published.
         while rclpy.ok():
             time.sleep(1.0)

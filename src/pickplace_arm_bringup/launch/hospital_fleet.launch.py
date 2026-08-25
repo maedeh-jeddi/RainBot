@@ -1,4 +1,7 @@
 import os
+import shlex
+import subprocess
+import tempfile
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -56,29 +59,117 @@ SPAWN_SETTLE = int(os.environ.get(
 # both the insertion and the controller bring-up.
 SPAWN_STAGGER = int(os.environ.get('FLEET_SPAWN_STAGGER', 6))
 
-# NAV_SETTLE AND NAV_STAGGER ARE BOTH ZERO NOW, AND THAT IS A DELIBERATE
-# SIMPLIFICATION RATHER THAN A GAMBLE.
+# NAV_STAGGER IS 12, AND ZERO WAS THE SINGLE BIGGEST CAUSE OF THIS FLEET
+# FAILING TO COME UP.
 #
-# They existed to keep three lifecycle bring-ups from overlapping, because
-# nav2_lifecycle_manager gives each change_state call a deadline Humble
-# hardcodes at 2 s and one slow answer stops the bring-up dead. But the ordering
-# they were buying is ALREADY ENFORCED, twice over, by things that are
-# conditions rather than guesses:
+# The previous value was 0, on the reasoning that ACTIVATION is already
+# serialised by the gate below, so the NODES might as well construct in
+# parallel. The serialisation part is true and the conclusion is wrong: what
+# matters is not when the stacks activate, it is that starting them together
+# creates eighteen DDS participants at the same instant, on top of the forty
+# this system already runs. Discovery is pairwise, and the storm loses exactly
+# the small messages bring-up depends on.
 #
-#   lifecycle_gate  waits for the PREVIOUS robot's navigate_to_pose to be
-#                   serving before this robot's manager is even started, which
-#                   is precisely "that stack has finished and the machine is
-#                   quiet again"
-#   nav_bringup     retries a stalled bring-up instead of leaving a dead robot
+# The symptom was never a crash. Nodes came up healthy and simply could not be
+# reached: /r2/bt_navigator and /r2/planner_server were ABSENT from
+# `ros2 node list` while their own services were listed, their processes idling
+# at 2% CPU, waiting for a configure request that never arrived. The lifecycle
+# manager logged "Configuring bt_navigator" and nothing after it, ever. That is
+# the same TRANSIENT_LOCAL-over-shared-memory unreliability that already cost
+# this project the map (map_pump.py) and the robot descriptions (the -file spawn
+# below), showing up in service calls instead of latched topics.
 #
-# So the two constants were adding 45 + 40 + 40 = 125 s of pure waiting on top
-# of a gate that was going to serialise the work anyway. Letting the NODES
-# construct in parallel while ACTIVATION stays serialised is the whole point.
-# Both remain overridable if a slower machine turns out to need them.
-NAV_STAGGER = int(os.environ.get('FLEET_NAV_STAGGER', 0))
+# Measured back to back, same machine, same world, GUI and rviz both running:
+#
+#             NAV_STAGGER=0                     NAV_STAGGER=12
+#     r1      active t+64.5s                    active t+56.3s
+#     r2      attempt FAILED after 100s         active t+70.9s
+#     r3      (never reached an attempt)        active t+83.3s
+#     mission never dispatched                  DISPATCHED t+92.3s
+#
+# Every robot came up on its FIRST attempt, each taking about three seconds,
+# where before a single failed attempt cost 100 s and four of them cost six and
+# a half minutes -- usually ending with two robots up and the mission never
+# starting, which is exactly what this looked like from the outside.
+#
+# So the 24 s this spends is not a tax on a working system, it is the
+# difference between a working one and a coin flip.
+# WHICH DDS PROFILE THE WHOLE FLEET USES.
+#
+# Back to UDP-only. fastdds_shm.xml was adopted for throughput, and its
+# measurements were real -- but it re-introduced the exact failure
+# fastdds_udp_only.xml was written to remove, and that file's own docstring
+# predicts what was measured here line for line: a participant hits
+#
+#     RTPS_TRANSPORT_SHM Error: Failed init_port fastrtps_port7445:
+#         open_and_lock_file failed
+#
+# "and then never discovers its topics ... there is no /odom, the EKF
+# publishes no odom->base_link". Observed on this fleet, with r3's wheel
+# odometry flowing at 49.9 Hz and its IMU at 50.1 Hz, the frame r3/odom did
+# not exist AT ALL -- so amcl could not publish map->odom, the global
+# costmap blocked in "Timed out waiting for transform from r3/base_link to
+# map", planner_server never finished activating, and the robot never came
+# up. Clearing /dev/shm first does not prevent it: the port failure happens
+# as LATER participants join, not only at startup.
+#
+# THE THROUGHPUT ARGUMENT HAS MOVED. SHM was chosen when three 480x480
+# clouds at 15 Hz were on the bridge; that is now 320x320 at 10 Hz, roughly
+# a 70% cut, and rviz no longer starts during bring-up. What SHM was paying
+# for is largely gone, and it was being paid for with robots that do not
+# start.
+DDS_PROFILE = 'fastdds_udp_only.xml'
+
+NAV_STAGGER = int(os.environ.get('FLEET_NAV_STAGGER', 12))
 NAV_SETTLE = int(os.environ.get('FLEET_NAV_SETTLE', 0))
 NAV_NODES = ['controller_server', 'smoother_server', 'planner_server',
              'behavior_server', 'bt_navigator']
+
+
+def _rviz_env_prefix(bringup_share):
+    """Run rviz2 in a WHITELISTED environment rather than a blacklisted one.
+
+    THE BLACKLIST THIS REPLACES DID NOT WORK. It unset seven GTK/GDK variables
+    that a snap-packaged editor exports, and the reasoning was sound as far as
+    it went -- but launched from that editor's terminal rviz2 still died every
+    single time, so `use_rviz:=true` had never once produced a window:
+
+        rviz2: symbol lookup error:
+            /snap/core20/current/lib/x86_64-linux-gnu/libpthread.so.0:
+            undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE
+        [rviz2] Failed to create an OpenGL context. GLXBadDrawable
+        process has died [exit code -11]
+
+    NOT A GRAPHICS PROBLEM, despite what the second line says. glxinfo on the
+    same display reports an RTX 2050 with direct rendering and OpenGL 4.6; the
+    same rviz2 with the same config runs fine under `env -i`. It is the parent
+    environment, and delta-debugging it found the breakage is not one variable
+    to unset: GNOME_DESKTOP_SESSION_ID alone is enough to segfault rviz2, and
+    removing it from the full environment still leaves other breakers behind.
+
+    That is why this is a whitelist. A blacklist has to enumerate every variable
+    any desktop session might ever export, and it silently loses that race --
+    which is exactly how this ended up shipping broken. A whitelist enumerates
+    what rviz2 NEEDS, which is short, known, and does not grow when someone
+    launches from a different terminal.
+
+    FASTRTPS_DEFAULT_PROFILES_FILE is rebuilt here rather than forwarded: this
+    launch file sets it with SetEnvironmentVariable further down, so it is not
+    in os.environ yet at the moment this prefix string is constructed. Dropping
+    it would leave rviz2 the one participant in the fleet not using shared
+    memory, subscribing to three robots' point clouds over loopback UDP.
+    """
+    keep = ('HOME', 'USER', 'DISPLAY', 'XAUTHORITY', 'PATH', 'LD_LIBRARY_PATH',
+            'AMENT_PREFIX_PATH', 'PYTHONPATH', 'ROS_DISTRO', 'ROS_VERSION',
+            'ROS_PYTHON_VERSION', 'RMW_IMPLEMENTATION', 'ROS_DOMAIN_ID',
+            'ROS_LOCALHOST_ONLY', 'ROS_AUTOMATIC_DISCOVERY_RANGE',
+            'XDG_RUNTIME_DIR')
+    pairs = [f'{k}={os.environ[k]}' for k in keep if os.environ.get(k)]
+    if not os.environ.get('XAUTHORITY'):
+        pairs.append('XAUTHORITY=' + os.path.expanduser('~/.Xauthority'))
+    pairs.append('FASTRTPS_DEFAULT_PROFILES_FILE='
+                 + os.path.join(bringup_share, 'config', DDS_PROFILE))
+    return 'env -i ' + ' '.join(shlex.quote(pair) for pair in pairs)
 
 
 def generate_launch_description():
@@ -144,13 +235,48 @@ def generate_launch_description():
     # ONE map_server for the whole fleet, in the global namespace. The map frame
     # is the only thing the robots share, and it is what makes their separate
     # odom islands comparable -- r1 knowing where r2 is starts here.
+
     map_server = Node(
         package='nav2_map_server', executable='map_server', name='map_server',
         output='screen', parameters=[sim, {'yaml_filename': map_yaml}])
+    # BOND CHECKING IS OFF, AND WITHOUT THIS THE FLEET COMES UP ABOUT HALF THE
+    # TIME. nav2_lifecycle_manager holds a bond with each server it manages and
+    # kills one that misses a heartbeat for bond_timeout (4 s by default). During
+    # bring-up this machine is spawning three robots and starting three Nav2
+    # stacks, and map_server -- which has nothing to do but hold one 540x1160
+    # grid -- loses that race:
+    #
+    #   t+218  Have not received a heartbeat from map_server.
+    #   t+218  CRITICAL FAILURE: SERVER map_server IS DOWN after not receiving
+    #
+    # It is then restarted, and THAT is what breaks the robots. /map is latched
+    # (TRANSIENT_LOCAL), so a robot whose amcl subscribes while the publisher is
+    # alive gets it and never thinks about it again; one that subscribes during
+    # a restart window gets nothing and blocks in configure forever. Measured on
+    # the run that motivated this: r1 received the map and was navigating 42 s
+    # in, while r2 and r3 logged "Creating" and never activated a single node.
+    # nav_bringup then spent four attempts each on stacks that could not
+    # possibly come up, and the mission gate waited on all three for 465 s.
+    #
+    # The heartbeat is worth nothing here anyway: this map_server reads one file
+    # at startup and serves a latched topic. There is no failure it can have
+    # that restarting it fixes, and the restart is itself the failure.
     map_lifecycle = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
         name='lifecycle_manager_map', output='screen',
-        parameters=[sim, {'autostart': True, 'node_names': ['map_server']}])
+        parameters=[sim, {'autostart': True, 'node_names': ['map_server'],
+                          'bond_timeout': 0.0}])
+
+    # THE SECOND HALF OF GETTING THE MAP TO EVERY ROBOT. Disabling the bond above
+    # stopped map_server being KILLED mid-bringup; it did not make the one latched
+    # /map sample arrive everywhere. Measured after the bond fix, with no
+    # heartbeat failures at all: r2 and r3 received the map, r1 never so much as
+    # logged "Subscribed to map topic", and two of three stacks never activated.
+    # See map_pump.py -- including why amcl's first_map_only must be true.
+    map_pump = Node(
+        package='pickplace_arm_bringup', executable='map_pump',
+        name='map_pump', output='screen', parameters=[sim],
+        arguments=['--period', '2.0', '--duration', '1800'])
 
     # ONLY THE FRONT CAMERA IS BRIDGED, AND THE WRIST CAMERA IS NOT.
     #
@@ -221,6 +347,38 @@ def generate_launch_description():
     # Filled in the loop below, started behind arm_gate at the end.
     arm_actions = []
 
+    # SPAWN FROM A FILE, NOT FROM /<ns>/robot_description.
+    #
+    # `ros_gz_sim create -topic ...` subscribes to a LATCHED topic and blocks
+    # until a sample arrives, and on this stack that sample does not reliably
+    # arrive. Measured on a hung bring-up, with r3's robot_state_publisher alive
+    # and publishing:
+    #
+    #     /r3/robot_description   Publisher count: 1   Subscription count: 1
+    #     ros2 topic echo /r3/robot_description --once   -> nothing in 20 s
+    #     r3's `create` still waiting, 5 minutes in; only 2 of 3 robots spawned
+    #
+    # That is the same TRANSIENT_LOCAL-over-shared-memory delivery failure that
+    # config/fastdds_shm.xml already warns about ("if a participant ever hangs
+    # on Waiting messages on topic [/robot_description]"), and clearing
+    # /dev/shm beforehand does not prevent it -- this run started from a clean
+    # /dev/shm and a load of 1.49.
+    #
+    # The xacro is expanded once here and written out, so `create` reads a file
+    # off disk and cannot be blocked by DDS at all. robot_state_publisher still
+    # publishes the topic for everything else that wants it; nothing else NEEDS
+    # it before the robot exists.
+    urdf_dir = tempfile.mkdtemp(prefix='fleet_urdf_')
+    urdf_files = {}
+    for ns, *_ in ROBOTS:
+        urdf = subprocess.check_output(
+            ['xacro', xacro_file, 'use_gazebo:=true', f'robot_ns:={ns}'],
+            text=True)
+        path = os.path.join(urdf_dir, f'{ns}.urdf')
+        with open(path, 'w') as fh:
+            fh.write(urdf)
+        urdf_files[ns] = path
+
     actions = []
     for idx, (ns, x, y, yaw) in enumerate(ROBOTS):
         robot_description = {
@@ -247,7 +405,7 @@ def generate_launch_description():
                  f'sleep {SPAWN_SETTLE + idx * SPAWN_STAGGER}; '
                  f'exec ros2 run ros_gz_sim create '
                  f'-world {WORLD_ENTITY} '
-                 f'-topic /{ns}/robot_description -name {ns} '
+                 f'-file {urdf_files[ns]} -name {ns} '
                  f'-x {x} -y {y} -z {SPAWN_Z} -Y {yaw}'],
             output='screen',
         )
@@ -448,18 +606,20 @@ def generate_launch_description():
 
     # The condition the arms wait on: every robot's bt_navigator serving, which
     # is exactly "all three stacks are up and the machine is quiet again".
+    # WAITS ON nav_ready, NOT ON navigate_to_pose. The action server is
+    # advertised at CONFIGURE, so gating on it fired while two of three stacks
+    # were still inactive -- and then started three move_groups and rviz into
+    # the bring-up they were meant to follow. See nav_bringup.announce_ready().
     arm_gate = Node(
         package='pickplace_arm_bringup', executable='wait_for',
         name='wait_for_arms', output='screen', parameters=[sim],
         arguments=['--label', 'arms', '--timeout', '900']
-        + [a for n in NAV_ROBOTS for a in ('--action', f'/{n}/navigate_to_pose')])
+        + [a for n in NAV_ROBOTS for a in ('--topic', f'/{n}/nav_ready')])
 
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2', output='screen',
         condition=IfCondition(LaunchConfiguration('use_rviz')),
-        prefix=('env -u GTK_PATH -u GTK_EXE_PREFIX -u LOCPATH '
-                '-u GDK_PIXBUF_MODULE_FILE -u GDK_PIXBUF_MODULEDIR '
-                '-u GIO_MODULE_DIR -u GTK_IM_MODULE_FILE'),
+        prefix=_rviz_env_prefix(bringup_share),
         # GENERATED FROM THE FLEET LIST, not a committed .rviz file. The
         # single-robot configs describe one robot on unprefixed topics and
         # cannot be pointed at three at once; written out by hand for a fleet
@@ -490,15 +650,32 @@ def generate_launch_description():
         # off in the first place.
         SetEnvironmentVariable(
             'FASTRTPS_DEFAULT_PROFILES_FILE',
-            os.path.join(bringup_share, 'config', 'fastdds_shm.xml')),
+            os.path.join(bringup_share, 'config', DDS_PROFILE)),
         gazebo,
         bridge,
         map_server,
         map_lifecycle,
-        rviz,
+        map_pump,
         fleet_gate,
         *actions,
         arm_gate,
+        # RVIZ STARTS WITH THE ARMS, NOT WITH THE LAUNCH, and this is a
+        # reliability fix rather than a cosmetic one.
+        #
+        # rviz2 is the second most expensive process in this system while it is
+        # STARTING: it loads three robots' meshes, builds a display per topic
+        # and subscribes to the lot. Measured during bring-up it sat at 166% of
+        # a core -- more than the whole ros_gz bridge -- and that lands in the
+        # exact window where nav2_lifecycle_manager is making change_state calls
+        # against a deadline Humble hardcodes at 2 s. Runs with rviz competing
+        # there repeatedly left r2 and r3 with "6 node(s) not active" through
+        # four bring-up attempts, while r1 came up first time.
+        #
+        # Nothing is lost by waiting. arm_gate is already the condition "every
+        # robot's navigate_to_pose is serving", so the window rviz misses is one
+        # where the robots are not moving and there is nothing to watch. It
+        # still opens by itself when the launch file is run, which is what it is
+        # there for.
         RegisterEventHandler(OnProcessExit(target_action=arm_gate,
-                                           on_exit=arm_actions)),
+                                           on_exit=arm_actions + [rviz])),
     ])

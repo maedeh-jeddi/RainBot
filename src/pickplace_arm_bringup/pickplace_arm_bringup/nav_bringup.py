@@ -61,6 +61,7 @@ from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
 
 from lifecycle_msgs.srv import GetState
+from std_msgs.msg import Bool
 from nav2_msgs.srv import ManageLifecycleNodes
 
 
@@ -134,6 +135,7 @@ class NavBringup(Node):
             if ok:
                 log.info(f'[{self.ns}] all {len(st)} nodes active after '
                          f'{attempt} attempt(s)')
+                self.announce_ready()
                 return True
 
             stalled = [n for n, v in st.items() if v != ACTIVE]
@@ -148,6 +150,40 @@ class NavBringup(Node):
         log.error(f'[{self.ns}] gave up after {self.args.attempts} attempts; '
                   f'final states: {self.states()}')
         return False
+
+
+    def announce_ready(self):
+        """Say, on a topic, that this robot's stack is genuinely ACTIVE.
+
+        WHY A TOPIC AND NOT AN ACTION SERVER. Everything downstream used to gate
+        on /<ns>/navigate_to_pose existing, and that is not the same claim: a
+        lifecycle node advertises its action server during CONFIGURE, long
+        before anything works. Measured on a failing run, the mission gate
+        reported "[mission] ready after 2.2s" while two of three stacks had not
+        activated at all -- so three move_groups, three mission nodes and rviz
+        all started INTO the bring-up they were supposed to wait for. The
+        machine then missed exactly the deadlines that bring-up depends on:
+
+            ekf_node Failed to meet update rate! Took 3.38 seconds
+            Failed to change state for node: controller_server. Exception:
+                controller_server/get_state service client: async_send_request failed
+            Failed to bring up all requested nodes. Aborting bringup.
+
+        This heartbeat is published only after every managed node has been READ
+        BACK as ACTIVE, so a gate waiting on it cannot fire early.
+
+        A PLAIN (non-latched) TOPIC IS DELIBERATE. Transient-local delivery is
+        exactly what has proved unreliable on this stack -- it is why map_pump
+        exists and why the robots are no longer spawned from
+        /<ns>/robot_description -- so this repeats instead of latching, and the
+        node stays alive to keep repeating it.
+        """
+        pub = self.create_publisher(Bool, 'nav_ready', 10)
+        msg = Bool(data=True)
+        self.create_timer(0.5, lambda: pub.publish(msg))
+        self.get_logger().info(
+            f'[{self.ns}] publishing nav_ready -- the arms, the mission nodes '
+            f'and rviz wait on this')
 
 
 def main(argv=None):
@@ -179,7 +215,12 @@ def main(argv=None):
     rclpy.init()
     node = NavBringup(args)
     try:
-        node.run()
+        # STAY ALIVE ON SUCCESS. run() starts the nav_ready heartbeat, and the
+        # arms, the mission nodes and rviz are all gated on it -- so exiting
+        # here would take the topic away with the process. On failure there is
+        # nothing to announce, so it returns as before.
+        if node.run():
+            rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:

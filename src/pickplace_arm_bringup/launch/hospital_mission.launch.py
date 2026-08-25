@@ -2,10 +2,14 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import (DeclareLaunchArgument,
+                            IncludeLaunchDescription, RegisterEventHandler,
+                            TimerAction)
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 from pickplace_arm_bringup.fleet_layout import ARM_ROBOTS, ROBOTS, WORLD_ENTITY
 from pickplace_arm_bringup.rack_table_layout import (
@@ -109,16 +113,12 @@ def generate_launch_description():
                             TABLE_SPAWN_Z, tyaw))
     assert len(tables) == len(STATIC_TABLES)
 
-    # Racks chain off their OWN table's spawner exiting, not off a timer: each is
-    # placed at its table's top height, so spawning one before its table exists
-    # drops it on the floor.
-    racks, rack_chain = [], []
-    for idx, (name, colour, _table, (rx, ry), _stand) in enumerate(
-            collection_points(), start=1):
-        rack = spawn(f'rack_{colour}', f'rack_{colour}', rx, ry, RACK_SPAWN_Z)
-        racks.append(rack)
-        rack_chain.append(RegisterEventHandler(
-            OnProcessExit(target_action=tables[idx], on_exit=[rack])))
+    # Each rack is placed at its table's TOP height, so the tables have to exist
+    # before these run or the racks drop to the floor. That ordering is enforced
+    # by the timer chain at the bottom of this file -- see the note there for why
+    # it is a timer and not the spawners' exit.
+    racks = [spawn(f'rack_{colour}', f'rack_{colour}', rx, ry, RACK_SPAWN_Z)
+             for _name, colour, _table, (rx, ry), _stand in collection_points()]
 
     # Nine welds to break: one per (robot, rack) pair. See rack_release.py for
     # why this is a node that publishes REPEATEDLY rather than nine
@@ -163,6 +163,13 @@ def generate_launch_description():
         name='wait_for_mission', output='screen',
         parameters=[{'use_sim_time': True}],
         arguments=['--label', 'mission', '--timeout', '900']
+        # nav_ready, NOT navigate_to_pose. That action server exists from
+        # CONFIGURE onwards, so this gate used to report "[mission] ready after
+        # 2.2s" while r2 and r3 had not activated a single node -- and the three
+        # mission nodes it then started, each building a MoveIt2 client, landed
+        # on top of the bring-up still in progress. nav_bringup publishes
+        # nav_ready only after reading every managed node back as ACTIVE.
+        #
         # NO TF CHECK HERE, DELIBERATELY. The condition that matters is that
         # each robot's AMCL is localizing, and the obvious way to test it is
         # map -> <ns>/base_link. But a tf2 listener in PYTHON deserialises every
@@ -173,7 +180,7 @@ def generate_launch_description():
         # itself -- wait_for_localization() waits for that same transform -- so
         # the gate stays cheap and the MISSION NODE is patient instead.
         + [a for ns in ARM_ROBOTS
-           for a in ('--action', f'/{ns}/navigate_to_pose')])
+           for a in ('--topic', f'/{ns}/nav_ready')])
     # NOTE what is NOT waited on here: move_action. move_group is the slowest
     # node in the system to become ready, and NOTHING NEEDS AN ARM UNTIL A ROBOT
     # REACHES A TABLE -- which is a 29 to 40 m drive, a minute or more after
@@ -187,34 +194,61 @@ def generate_launch_description():
              parameters=[{'use_sim_time': True}])
         for ns in ARM_ROBOTS
     ]
+    # depart_stagger:=<seconds> -- how long after one robot leaves reception the
+    # next is dispatched. Exposed as a launch argument because this is a number
+    # worth changing without editing code; see task_manager.DEFAULT_DEPART_STAGGER.
     manager = Node(
         package='pickplace_arm_bringup', executable='task_manager',
         name='task_manager', output='screen',
-        parameters=[{'use_sim_time': True}])
+        parameters=[{'use_sim_time': True},
+                    {'depart_stagger': ParameterValue(
+                        LaunchConfiguration('depart_stagger'),
+                        value_type=float)}])
 
-    # Hung off the LAST RACK's spawner, not the last table's. The racks are
-    # created here rather than inside the event handlers precisely so that they
-    # stay addressable as launch actions and this ordering can be stated exactly:
-    # every rack exists before any detach is published. Chaining off a table
-    # instead would race its own rack, and a detach addressed at a model that
-    # does not exist yet is consumed silently -- the weld is then made
-    # afterwards and never broken, which looks like the rack being towed off its
-    # table by a robot that never touched it.
-    detach_after_racks = RegisterEventHandler(
-        OnProcessExit(target_action=racks[-1], on_exit=detaches))
+    # EVERY RACK MUST EXIST BEFORE ANY DETACH IS PUBLISHED. A detach addressed at
+    # a model that does not exist yet is consumed silently, the weld is then made
+    # afterwards and never broken, and the result looks like a rack being towed
+    # off its table by a robot that never touched it. The timer chain below is
+    # what guarantees the ordering.
 
+    # THE PROP CHAIN IS ON TIMERS, NOT ON OnProcessExit, AND IT HAS TO BE.
+    #
+    # `ros_gz_sim create` does not reliably exit after it has done its job.
+    # Measured on a run that hung with everything else healthy:
+    #
+    #     [create-31] OK creation of entity.        <- table_collect_2 exists
+    #     (process never exits; still running 20 minutes later)
+    #
+    # Every downstream step was chained off that exit -- rack_blue off its
+    # table's spawner, the detaches off the last rack, the mission gate off the
+    # last rack again -- so one spawner that lingers after SUCCEEDING silently
+    # cancels the entire mission. The world had three robots localised and
+    # navigating, four tables, and two of three racks, and nothing was ever
+    # going to happen. `gz model --list` showed rack_blue simply absent.
+    #
+    # Waiting on a wall-clock delay instead is weaker in principle and stronger
+    # in practice: entity creation is acknowledged about 0.1 s after the request
+    # (see the timestamps above), so these margins are enormous, and no step
+    # depends on a process deciding to terminate. The ORDER the comments above
+    # argue for is preserved exactly -- tables, then racks, then detaches, then
+    # the mission -- it is just sequenced by time rather than by exit.
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'depart_stagger', default_value='20.0',
+            description='Seconds between one robot leaving reception and the '
+                        'next being dispatched.'),
         fleet,
         prop_gate,
-        # Registered BEFORE anything they watch can exit.
-        *rack_chain,
-        detach_after_racks,
-        RegisterEventHandler(OnProcessExit(target_action=prop_gate,
-                                           on_exit=tables)),
-        # The mission gate starts once the props are down -- the racks must
-        # exist and be released before any robot is told to go and fetch one.
-        RegisterEventHandler(OnProcessExit(target_action=racks[-1],
-                                           on_exit=[mission_gate])),
+        RegisterEventHandler(OnProcessExit(
+            target_action=prop_gate,
+            on_exit=tables
+            # Racks spawn onto table tops, so the tables must exist first.
+            + [TimerAction(period=10.0, actions=racks)]
+            # Then every (robot, rack) weld the DetachableJoint plugin made on
+            # sight has to be broken -- see rack_release.py.
+            + [TimerAction(period=20.0, actions=detaches)]
+            # And only then is it safe to tell a robot to go and fetch one.
+            + [TimerAction(period=24.0, actions=[mission_gate])])),
         RegisterEventHandler(OnProcessExit(target_action=mission_gate,
                                            on_exit=missions + [manager])),
     ])

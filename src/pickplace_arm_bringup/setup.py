@@ -54,6 +54,7 @@ setup(
             # every gripper and every rack. Load-bearing: see its docstring for
             # what a fleet dragging its own payload around looks like.
             'rack_release = pickplace_arm_bringup.rack_release:main',
+            'map_pump = pickplace_arm_bringup.map_pump:main',
             # The fleet job: one mission node per robot, plus the manager that
             # assigns the errands and hands out delivery slots and parking
             # vertices. See task_manager.py for why the coordination lives

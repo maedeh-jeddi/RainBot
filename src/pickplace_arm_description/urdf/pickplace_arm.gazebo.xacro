@@ -385,7 +385,11 @@
            Verified, not assumed: a full 3-box run at these rates placed and
            verified all three boxes with ZERO "lost the column", "no box
            detected" or "jaws closed on air" warnings. -->
-      <update_rate>15</update_rate>
+      <!-- 10 Hz, down from 15. THREE OF THESE SHARE ONE BRIDGE PROCESS, and
+           that process is single threaded. The servo loop still cannot go round
+           faster than about 8 Hz (see above), so 10 keeps a fresh frame waiting
+           for it while cutting a third of the traffic. -->
+      <update_rate>10</update_rate>
       <always_on>1</always_on>
       <visualize>true</visualize>
       <camera>
@@ -420,8 +424,20 @@
 
                The blob shrinks with the wider field (measured 2665 px scales to
                roughly 1600), still fifty times MIN_VALID_PIXELS. -->
-          <width>480</width>
-          <height>480</height>
+          <!-- 320x320, down from 480x480, AND STILL SQUARE. The square
+               aspect is what buys the 90 deg VERTICAL field the racks need
+               (see above); the PIXEL COUNT is not what buys it, so this
+               costs nothing in field of view. What it buys back is bandwidth:
+               an organised cloud is ~32 bytes a point, so 480x480 at 15 Hz is
+               about 110 MB/s PER ROBOT and three of those share one
+               single-threaded ros_gz bridge. Together with the rate change
+               above this is a ~70% cut.
+          
+               Detection is unaffected: the gate needs 30 coloured pixels and
+               the 0.06 m grip block still spans ~15 px (~230 px area) at the
+               0.8 m stand-off. -->
+          <width>320</width>
+          <height>320</height>
           <format>R8G8B8</format>
         </image>
         <clip>

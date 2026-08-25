@@ -174,6 +174,7 @@ class DeliveryMission(Mission2Hospital):
             return None
         deadline = time.time() + max(wait_sec, 0.0)
         announced = False
+        last_said = 0.0
         while True:
             fut = client.call_async(Trigger.Request())
             # Safe precisely because _claim_node is spun by nobody else.
@@ -188,11 +189,21 @@ class DeliveryMission(Mission2Hospital):
             # "in use by <ns>" is a queue, not a refusal. Anything else -- no
             # free slot at all, say -- is final.
             if 'in use' in res.message and time.time() < deadline:
-                if not announced:
+                # SAY SO PERIODICALLY, NOT ONCE. This loop polls every 2 s for
+                # up to wait_sec, and it used to announce itself a single time
+                # and then go silent -- so a robot that had picked its rack,
+                # parked on its queue spot and was simply waiting its turn was
+                # indistinguishable, from the terminal, from one that had hung.
+                # That is what "it got stuck and didn't move anymore after
+                # picking" looks like from the outside, and the robot was fine.
+                now = time.time()
+                if not announced or now - last_said >= 15.0:
+                    waited = now - (deadline - max(wait_sec, 0.0))
                     self.get_logger().info(
-                        f'[{self.ns}] waiting for the delivery table '
-                        f'({res.message})')
+                        f'[{self.ns}] queued for the delivery table, waiting '
+                        f'{waited:.0f}s ({res.message})')
                     announced = True
+                    last_said = now
                 time.sleep(2.0)
                 continue
             self.get_logger().error(f'[{self.ns}] {what} refused: {res.message}')
@@ -409,6 +420,144 @@ class DeliveryMission(Mission2Hospital):
         except Exception as exc:
             self.get_logger().warn(f'[{self.ns}] retreat failed: {exc}')
 
+    def _navigate_with_recovery(self, pose, what, attempts=3, tight_yaw=False):
+        """navigate_to, but treat a refusal as a POSE problem and re-localize.
+
+        Smac 2D names the failure this exists for, in as many words:
+
+            GridBased: failed to create plan, invalid use:
+                Starting point in lethal space!
+
+        The robot is not trapped -- it is standing in open floor next to a
+        table -- but AMCL has placed it inside that table's inscribed zone, and
+        a planner asked to start from a lethal cell has nothing to say. Every
+        approach in this mission ends beside a table, so every approach can hit
+        this, and a stopped robot cannot correct itself. See _relocalize.
+        """
+        for attempt in range(1, attempts + 1):
+            if tight_yaw:
+                self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
+            ok = self.navigate_to(self.make_map_goal(*pose))
+            if tight_yaw:
+                self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
+            if ok:
+                return True
+            if attempt < attempts:
+                self._relocalize(f'could not plan to {what}')
+        return False
+
+    def _base_xy_in_map(self, default=None):
+        """This robot's (x, y) in the map frame, or `default` if TF is not there."""
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                'map', self.tf_frame('base_link'), rclpy.time.Time(),
+                timeout=RclDuration(seconds=2.0))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            self.get_logger().warn(f'[{self.ns}] map <- base_link failed: {e}')
+            return default
+        return (tf.transform.translation.x, tf.transform.translation.y)
+
+    def _fleet_index(self):
+        """This robot's position in ARM_ROBOTS, used to reserve one queue spot.
+
+        Static assignment is deliberate: every robot runs exactly one errand,
+        so there is nothing to contend over and no reason to make the manager
+        arbitrate a third resource. It also means two robots can never be sent
+        to the same waiting spot by a race.
+        """
+        from pickplace_arm_bringup.fleet_layout import ARM_ROBOTS
+        try:
+            return ARM_ROBOTS.index(self.ns)
+        except ValueError:
+            return 0
+
+    def _relocalize(self, why):
+        """Rotate in place until AMCL has had to re-weight against the laser.
+
+        THE SINGLE ROOT CAUSE BEHIND BOTH FAILURE MODES IN THIS FILE, measured
+        directly rather than inferred. With r3 stopped near the delivery table:
+
+            AMCL believes r3 is at (-4.147, 10.461)
+            ground truth (gz)        (-4.450,  9.252)
+            discrepancy              1.25 m
+            global costmap cost at AMCL pose = 99   <- inscribed, untraversable
+            global costmap cost at true pose = 0    <- free
+
+        NavFn plans from the pose AMCL reports, and it refuses to plan at all
+        when the START cell is untraversable -- so every attempt came back
+        "failed to create plan with tolerance 0.50" while the robot sat in
+        open floor. The recovery behaviours cannot help either: backup checks
+        the same poisoned pose and quits with "Collision Ahead". The robot is
+        not stuck, it is misplaced, and nothing downstream can tell.
+
+        AND IT CANNOT FIX ITSELF, because amcl only updates after update_min_d
+        (0.12 m) or update_min_a (0.1 rad) of motion. A robot that has stopped
+        somewhere wrong stays wrong: the same 1.75 m error was still there,
+        unchanged to the millimetre, eleven minutes later.
+
+        So the recovery has to supply the motion. Rotating is the cheapest
+        motion that does it -- it clears update_min_a eight times over without
+        translating anywhere the robot might not fit -- and the short reverse
+        first is because this failure parks the robot hard against a table,
+        which is exactly where a spin would grind.
+        """
+        log = self.get_logger()
+        log.warn(f'[{self.ns}] relocalizing: {why}')
+        self._drive_blind(-0.20, 2.5)
+        for _ in range(8):
+            self._rotate_step(math.pi / 4.0)
+        self._stop_base()
+
+    def _rack_in_view(self, colour, tries=6):
+        """Can the front camera actually SEE the rack from where we stopped?
+
+        This is the question claw_pick needs answered, and it is not the same
+        question navigate_to answers -- see _search_for_rack."""
+        self.move_config(HOME_CONFIG, 'gripper-down ready')
+        for _ in range(tries):
+            if self.detect_box_front(timeout_sec=0.5, color=colour) is not None:
+                return True
+        return False
+
+    def _search_for_rack(self, colour):
+        """Recovery for having stopped somewhere other than the standoff.
+
+        WHY THIS IS NEEDED. Nav2 reports success against AMCL's ESTIMATE, not
+        against the world. Measured on the run that motivated this: r1's filter
+        sat 1.75 m from truth, so Nav2 stopped the robot wedged against the end
+        of the collection bench -- 1.86 m from the standoff, pointing 29 deg
+        off -- and reported the goal reached. claw_approach then called
+        _face_box, which turns toward where the robot BELIEVES the rack is, so
+        the camera swung to the wrong bearing and logged "only 0 valid red
+        pixels" for eleven straight seconds before the errand gave up. The rack
+        was sitting on its table, untouched, the entire time.
+
+        A STATIONARY ROBOT CANNOT RECOVER BY WAITING. amcl only runs an update
+        after update_min_d (0.12 m) or update_min_a (0.1 rad) of motion, so a
+        robot parked in the wrong place keeps its wrong estimate forever: that
+        1.75 m error was still exactly 1.75 m eleven minutes later, to the
+        millimetre.
+
+        Rotating is the cheapest thing that fixes both halves at once. It clears
+        update_min_a on every step, so the filter finally gets to re-weight
+        against the laser, and it sweeps the camera around the room, so the rack
+        is found even while the filter is still wrong. The short reverse comes
+        first because this failure parks the robot AGAINST the bench, and a spin
+        started there just grinds along it.
+        """
+        log = self.get_logger()
+        log.warn(f'[{self.ns}] no {colour} rack in view -- searching')
+        self._drive_blind(-0.15, 2.0)
+        for step in range(8):
+            self._rotate_step(math.pi / 4.0)
+            if self.detect_box_front(timeout_sec=0.5, color=colour) is not None:
+                log.info(f'[{self.ns}] {colour} rack found after '
+                         f'{(step + 1) * 45} deg of search')
+                return True
+        log.warn(f'[{self.ns}] full turn without seeing the {colour} rack')
+        return False
+
     def run_errand(self, colour, table, rack_xy, stand):
         log = self.get_logger()
 
@@ -419,10 +568,26 @@ class DeliveryMission(Mission2Hospital):
         self.LAYOUT_TABLE_GRASP_Z = GROUND_Z + RT.TABLE_TOP + RT.RACK_GRIP_HEIGHT
 
         self.say('collecting', f'{colour} at ({rack_xy[0]:.2f},{rack_xy[1]:.2f})')
-        self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
-        ok = self.navigate_to(self.make_map_goal(*stand))
-        self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
-        if not ok:
+        # ARRIVAL IS VERIFIED AGAINST THE CAMERA, NOT AGAINST NAV2. "Goal
+        # reached" is a claim about where AMCL thinks the robot is; having the
+        # rack in frame is a claim about where it actually is, and only the
+        # second one is what claw_pick needs. A navigate_to that succeeds and
+        # leaves nothing in view is therefore treated as a failed approach and
+        # retried, because that is exactly the shape of the bug that cost a
+        # full errand: see _search_for_rack.
+        reached = False
+        for attempt in range(1, 4):
+            self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
+            ok = self.navigate_to(self.make_map_goal(*stand))
+            self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
+            if ok and self._rack_in_view(colour):
+                reached = True
+                break
+            if attempt < 3:
+                # The spin re-converges AMCL as much as it finds the rack, so
+                # the re-issued goal is planned from a corrected pose.
+                self._search_for_rack(colour)
+        if not reached:
             self.say('failed', 'could not reach the collection table')
             return False
 
@@ -438,22 +603,51 @@ class DeliveryMission(Mission2Hospital):
         self._drive_blind(-0.20, 3.5)
         self._stop_base()
 
-        # CLAIM THE SLOT BEFORE DRIVING THERE, NOT ON ARRIVAL.
+        # DRIVE TO THE DELIVERY TABLE FIRST AND WAIT THERE, then ask for the
+        # table. All three robots make the trip as soon as they have their rack;
+        # they queue at the table and go in one at a time.
         #
-        # Claiming on arrival is what the first version did, and it left the
-        # lock guarding the wrong thing. The delivery table's standoff, the
-        # creep in and the arm's working envelope all live in a space barely
-        # wider than one robot -- so two robots that both finish their pick at
-        # about the same time both DRIVE there, and the collision happens before
-        # either of them ever asks for a slot. Measured: two robots carrying
-        # their racks ended 1.15 m apart at that standoff, under the 1.20 m two
-        # Husky circumscribed radii need, each blocking the other with
-        # "Collision Ahead".
+        # WHERE THE WAIT HAPPENS IS THE WHOLE POINT. Only one robot can use the
+        # standoff -- it is barely wider than one robot, and the arm works
+        # across all three slots from it. An earlier version took the lock
+        # BEFORE setting off, which made the approach exclusive but also meant
+        # the two robots that lost the race simply stood at their collection
+        # tables, half a building away, until the winner had finished. The
+        # errands were concurrent right up to the last leg and then serialised
+        # completely.
         #
-        # Taking the lock first makes the whole APPROACH exclusive, which is
-        # what it always had to be. The wait costs nothing: the robot holds
-        # position with its rack until the table is free.
-        slot = self._claim(self._slot_client, 'slot', wait_sec=600.0)
+        # Waiting on a reserved spot 1.4 m behind the standoff keeps both
+        # properties: the approach is still exclusive, because a robot only
+        # leaves its spot once it holds the lock, but all three trips overlap.
+        # The spots are abreast rather than in single file precisely so the
+        # grant order does not have to match the queue order -- see
+        # rack_table_layout.delivery_queue().
+        # HOLD AT A DISTANCE, WHEREVER THE APPROACH PUTS US. The target is a
+        # point on a circle of RT.DELIVERY_HOLD_RADIUS around the table, on the
+        # line from wherever this robot is now -- so it stops on its way in
+        # rather than crossing the front of the table to reach an assigned spot.
+        here = self._base_xy_in_map(default=rack_xy)
+        hold_pose = RT.delivery_hold_pose(here)
+        self.say('approaching', 'the delivery table')
+        if not self._navigate_with_recovery(hold_pose, 'the holding ring'):
+            # Not fatal: the robot has stopped somewhere short of the ring,
+            # still holding its rack, and the manager's ordering below is what
+            # actually keeps the standoff exclusive.
+            self.get_logger().warn(
+                f'[{self.ns}] could not reach the holding ring -- waiting '
+                f'where it stands')
+        self._stop_base()
+        # SAID ONLY ONCE THE ROBOT HAS STOPPED. The manager holds every robot
+        # here until ALL of them are holding, so announcing this early would
+        # release the fleet while somebody was still driving.
+        self.say('holding', f'{RT.DELIVERY_HOLD_RADIUS:.1f} m from the table')
+
+        # 1800 s, up from 900. The wait is now genuinely serial: this robot
+        # holds until every robot has reached the ring, and then until every
+        # robot ahead of it in fleet order has PLACED AND PARKED. Three full
+        # turns plus their recoveries can exceed fifteen minutes, and timing out
+        # here would fail a robot that was waiting exactly as designed.
+        slot = self._claim(self._slot_client, 'slot', wait_sec=1800.0)
         if slot is None:
             self.say('failed', 'no delivery slot available')
             return False
@@ -461,10 +655,21 @@ class DeliveryMission(Mission2Hospital):
         self.say('delivering', f'slot {slot}')
 
         stand_d = RT.delivery_standoff()
-        self._set_yaw_goal_tolerance(TIGHT_YAW_TOLERANCE)
-        ok = self.navigate_to(self.make_map_goal(*stand_d))
-        self._set_yaw_goal_tolerance(DEFAULT_YAW_TOLERANCE)
-        if not ok:
+        # SAME RECOVERY AS THE COLLECTION APPROACH, for the same reason: a
+        # planner that cannot plan out of open floor is reporting a bad pose,
+        # not a blocked route, and only motion fixes that. See _relocalize.
+        if not self._navigate_with_recovery(stand_d, 'the delivery table',
+                                            tight_yaw=True):
+            # RETREAT EVEN THOUGH WE NEVER ARRIVED. Whatever went wrong, the
+            # robot is somewhere near the delivery table still holding its
+            # rack, and the manager is about to hand the table to someone else.
+            # _retreat_from_delivery's docstring describes this exact cascade
+            # being fixed for the PLACEMENT failure; the navigation failure
+            # reaches the same end state and was left out. Measured with it
+            # missing: r3 gave up and stopped 1.5 m from the table, r1 was
+            # granted the table next and could not plan past it, then r2 could
+            # not either -- one bad pose cost all three racks.
+            self._retreat_from_delivery()
             self.say('failed', 'could not reach the delivery table')
             return False
 
@@ -488,7 +693,12 @@ class DeliveryMission(Mission2Hospital):
         from pickplace_arm_bringup.fleet_layout import parking_vertices
         pose = parking_vertices()[vertex]
         self.say('parking', f'vertex {vertex}')
-        if not self.navigate_to(self.make_map_goal(*pose)):
+        # Same recovery as every other approach here. The parking drive starts
+        # AT the delivery table, which is exactly the place a robot's pose ends
+        # up inside an inscribed zone, so this leg fails the same way the others
+        # do -- measured: r1 placed its rack correctly and was then recorded as
+        # "failed could not reach parking vertex 1".
+        if not self._navigate_with_recovery(pose, f'parking vertex {vertex}'):
             self.say('failed', f'could not reach parking vertex {vertex}')
             return False
         self.say('parked', f'vertex {vertex}')
@@ -522,8 +732,14 @@ class DeliveryMission(Mission2Hospital):
             except (IndexError, ValueError) as e:
                 self.get_logger().error(f'[{self.ns}] unreadable task {task!r}: {e}')
                 continue
-            self.run_errand(colour, table, rack, stand)
-            self.say('done', '')
+            if self.run_errand(colour, table, rack, stand):
+                self.say('done', '')
+            # A FAILED ERRAND KEEPS ITS 'failed' STATUS AND ITS REASON. Saying
+            # 'done' unconditionally overwrote the reason with an empty string,
+            # so the manager's closing report announced that every robot had
+            # finished while one rack was still sitting on its collection
+            # table. 'failed' is already terminal for all_done(), so the fleet
+            # still shuts down cleanly -- it just stops lying about how.
             # ONE ERRAND PER ROBOT, which is what this plan asks for. Returning
             # rather than looping also stops a failed errand being retried
             # instantly and forever against a machine that is already the reason
