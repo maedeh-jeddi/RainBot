@@ -26,6 +26,7 @@ import time
 import threading
 
 import rclpy
+from rclpy.duration import Duration as RclDuration
 from rclpy.action import ActionClient
 from geometry_msgs.msg import Twist, PoseStamped, PointStamped
 from action_msgs.msg import GoalStatus
@@ -186,7 +187,37 @@ class NavAndPick(SearchAndPick):
                 time.sleep(1.5)
                 continue
             result_fut = handle.get_result_async()
-            rclpy.spin_until_future_complete(self, result_fut, timeout_sec=timeout_sec)
+            # THE DEADLINE IS IN SIM TIME, NOT WALL TIME, and that distinction
+            # is what made every long drive fail.
+            #
+            # spin_until_future_complete's timeout is wall clock, but the robot
+            # moves on the SIMULATION clock, and this world does not run in real
+            # time: measured, RTF = 0.57. So a 120 s wall timeout was really
+            # 68 s of driving, while the routes to the collection tables are 29
+            # to 40 m -- 53 to 73 s at 0.55 m/s. The timeout was landing in the
+            # middle of a drive that was about to succeed.
+            #
+            # That is exactly what a slow, flailing pick looked like from
+            # outside: all three robots hit "no rack in view -- searching" at
+            # t+120 s, spun a full circle looking for a rack they had not
+            # reached yet, then drove the rest of the way. Measured cost, one
+            # run: 191 s, 226 s and 246 s from "collecting" to "carrying".
+            #
+            # Counting in sim time makes the number mean what it says and keeps
+            # meaning it when the machine gets busier. The wall-clock backstop
+            # is there only so a stopped /clock cannot hang this forever.
+            deadline = self.get_clock().now() + RclDuration(seconds=timeout_sec)
+            wall_stop = time.time() + timeout_sec * 4.0
+            while rclpy.ok() and not result_fut.done():
+                rclpy.spin_until_future_complete(self, result_fut,
+                                                 timeout_sec=0.5)
+                if self.get_clock().now() >= deadline:
+                    log.warn(f'[nav] {timeout_sec:.0f}s of sim time elapsed')
+                    break
+                if time.time() > wall_stop:
+                    log.warn('[nav] wall-clock backstop hit -- is /clock '
+                             'running?')
+                    break
             res = result_fut.result()
             if res is None:
                 log.error('[nav] Nav2 goal timed out')

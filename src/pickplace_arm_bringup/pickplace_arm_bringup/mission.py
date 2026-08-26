@@ -308,7 +308,13 @@ class Mission(NavAndPick):
         log.info('=== MISSION APPROACH: front-cam coarse + wrist fine ===')
         deadline = time.time() + timeout_sec
 
-        if box_map is not None:
+        # DO NOT TURN TOWARD A RACK WE CAN ALREADY SEE. _face_box aims the base
+        # using map -> base_link, so its correction is only as good as AMCL --
+        # and the caller has just confirmed, with the CAMERA, that the rack is
+        # in frame. Turning on a 1 m localisation error at a 1.3 m stand-off is
+        # a ~40 deg swing, which takes the rack straight back out of view and
+        # costs a full search to recover something that was never lost.
+        if box_map is not None and face_first:
             self._face_box(box_map)
 
         # Phase 1: front camera. The slack (0.3 m inside the hand-off distance)
@@ -352,7 +358,8 @@ class Mission(NavAndPick):
 
     # --- full mission -------------------------------------------------------
     # --- CLAW approach: keep the gripper down, drive the box under it ---------
-    def claw_approach(self, box_map, timeout_sec=60.0, color='blue'):
+    def claw_approach(self, box_map, timeout_sec=60.0, color='blue',
+                      face_first=True):
         """One continuous motion: keep the gripper pointing straight DOWN and use
         the front (chassis) camera to drive the base until the `color` box is
         centred CLAW_STOP_X ahead -- no stop-and-go, no arm reorientation. The
@@ -431,7 +438,8 @@ class Mission(NavAndPick):
         log.warn('[claw] approach timed out')
         return False
 
-    def claw_pick(self, box_map, color='blue', grasp_z=None, x_offset=None):
+    def claw_pick(self, box_map, color='blue', grasp_z=None, x_offset=None,
+                  face_first=True):
         """Continuous claw pick of the `color` box: drive it under the gripper
         then descend straight onto it (to grasp_z -- raise for a box on a table).
         `x_offset` corrects the front camera's forward bias at the final descent;
@@ -446,11 +454,15 @@ class Mission(NavAndPick):
         log = self.get_logger()
         for attempt in range(1, 4):
             log.info(f'--- claw pick attempt {attempt}/3 ({color}) ---')
-            if not self.claw_approach(box_map, color=color):
+            if not self.claw_approach(box_map, color=color,
+                                      face_first=face_first):
                 return False
             if self.grab_below(grasp_z=grasp_z, color=color, x_offset=x_offset):
                 return True
             log.warn('[claw] grab missed -- re-centring and retrying')
+            # A miss may have nudged things, so later attempts are allowed to
+            # re-aim from the map estimate again.
+            face_first = True
             self.move_config(HOME_CONFIG, 'gripper-down ready')
             # A miss leaves the base parked at CLAW_STOP_X. That is still a
             # range the camera sees the box from (which is the whole point of

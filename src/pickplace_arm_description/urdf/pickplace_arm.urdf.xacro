@@ -75,6 +75,10 @@
        exactly what the prefixed sensor frames above are matched to. See
        tf_frame() in pick_and_place.py for the rule the mission code follows. -->
   <xacro:arg name="robot_ns" default=""/>
+  <!-- Render the wrist RGB-D camera at all. The hospital fleet turns it
+       off: nothing in that mission reads it, and three unused RGB-D
+       renders are pure load on the simulation server. -->
+  <xacro:arg name="wrist_camera" default="true"/>
   <xacro:property name="robot_ns" value="$(arg robot_ns)"/>
   <!-- '' or '/r1' for topic names; '' or 'r1/' for frame ids. -->
   <xacro:property name="ns_topic" value="${'' if robot_ns == '' else '/' + robot_ns}"/>

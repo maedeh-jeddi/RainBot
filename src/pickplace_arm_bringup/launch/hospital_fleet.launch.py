@@ -122,6 +122,13 @@ DDS_PROFILE = 'fastdds_udp_only.xml'
 
 NAV_STAGGER = int(os.environ.get('FLEET_NAV_STAGGER', 12))
 NAV_SETTLE = int(os.environ.get('FLEET_NAV_SETTLE', 0))
+
+# Seconds between one robot's move_group and the next. See the event handler at
+# the bottom of this file for what this is spreading and why it costs nothing.
+# 15 s is enough for a move_group to get through loading its planning pipelines
+# before the next starts; it is not tuned finer than that because the arms have
+# minutes of slack before anything needs them.
+ARM_STAGGER = int(os.environ.get('FLEET_ARM_STAGGER', 15))
 NAV_NODES = ['controller_server', 'smoother_server', 'planner_server',
              'behavior_server', 'bt_navigator']
 
@@ -372,7 +379,10 @@ def generate_launch_description():
     urdf_files = {}
     for ns, *_ in ROBOTS:
         urdf = subprocess.check_output(
-            ['xacro', xacro_file, 'use_gazebo:=true', f'robot_ns:={ns}'],
+            ['xacro', xacro_file, 'use_gazebo:=true', f'robot_ns:={ns}',
+             # Nothing in this mission reads the wrist camera; see the note
+             # in pickplace_arm.gazebo.xacro.
+             'wrist_camera:=false'],
             text=True)
         path = os.path.join(urdf_dir, f'{ns}.urdf')
         with open(path, 'w') as fh:
@@ -384,7 +394,8 @@ def generate_launch_description():
         robot_description = {
             'robot_description': ParameterValue(
                 Command(['xacro ', xacro_file,
-                         ' use_gazebo:=true', f' robot_ns:={ns}']),
+                         ' use_gazebo:=true', f' robot_ns:={ns}',
+                         ' wrist_camera:=false']),
                 value_type=str)
         }
 
@@ -676,6 +687,24 @@ def generate_launch_description():
         # where the robots are not moving and there is nothing to watch. It
         # still opens by itself when the launch file is run, which is what it is
         # there for.
-        RegisterEventHandler(OnProcessExit(target_action=arm_gate,
-                                           on_exit=arm_actions + [rviz])),
+        # THE ARMS ARE STAGGERED AMONG THEMSELVES, not just held behind the
+        # gate. Waiting for every nav stack fixed WHEN they start; it did not
+        # fix that all three then start in the same instant, and by the comment
+        # above each one costs 61% of a core while it constructs its planning
+        # pipelines. Three of those together is where this bring-up's thermal
+        # peak lives.
+        #
+        # Measured, headless, no rviz: the fleet held 67-76 C and load 1.2 for
+        # a full minute with the world and all three robots running, then went
+        # 83 C / load 3.4 -> 93 C / load 7.8 in the twenty seconds where the
+        # nav stacks finished and the move_groups came up together. The
+        # simulator was never the problem; the coincidence was.
+        #
+        # ARM_STAGGER spreads that same work instead of removing it, so nothing
+        # is given up: an arm is still idle until a robot reaches a table,
+        # minutes later, and the last one is ready long before then.
+        RegisterEventHandler(OnProcessExit(
+            target_action=arm_gate,
+            on_exit=[TimerAction(period=float(i * ARM_STAGGER), actions=[a])
+                     for i, a in enumerate(arm_actions)] + [rviz])),
     ])

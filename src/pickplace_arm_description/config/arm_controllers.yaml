@@ -23,7 +23,20 @@
     # diff drive integrates wheel odometry that the EKF then fuses at its own
     # rate, and the grasp check reads a finger position that moves over hundreds
     # of milliseconds. Raise it back if arm tracking ever looks coarse.
-    update_rate: 50  # Hz
+    # 25 Hz, down from 50. THIS IS THE /tf RATE, and /tf is the single
+    # biggest load on this machine.
+    #
+    # joint_state_broadcaster publishes once per controller_manager update, and
+    # robot_state_publisher turns every one of those into a /tf message. /tf has
+    # 12 publishers and 29 SUBSCRIBERS, so each message is serialised and
+    # delivered 29 times through the loopback network stack -- which is why
+    # three robot_state_publishers sit at ~57% of a core each and why 39% of ALL
+    # cpu on this machine is kernel time.
+    #
+    # Halving the rate halves that traffic. 25 Hz is still ahead of every
+    # consumer: Nav2's controller runs at 20 Hz, the base tops out at 0.55 m/s
+    # (2 cm per cycle), and the arm moves slowly through pick and place.
+    update_rate: 25  # Hz
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
     arm_controller:

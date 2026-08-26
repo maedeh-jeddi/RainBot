@@ -76,7 +76,15 @@ BLIND_FORWARD_LINEAR = 0.2      # m/s, when a full spin finds nothing
 BLIND_FORWARD_SEC = 2.0
 
 APPROACH_LINEAR_GAIN = 0.5
-APPROACH_LINEAR_MAX = 0.35      # m/s
+# 0.45 m/s, up from 0.35. THIS CAP ONLY EVER BINDS FAR FROM THE BOX, so raising
+# it does not make the delicate part of the approach any faster or any rougher.
+# The command is min(MAX, GAIN * distance) with GAIN 0.5, so the cap is only
+# reached beyond 2 x MAX / 1 = 0.90 m; inside that the gain term is smaller and
+# is what actually governs. In other words this speeds up the run-in from the
+# stand-off and leaves the last 0.9 m -- the part that has to end at
+# STOP_DISTANCE without overshooting -- controlled by exactly the same law it
+# was before.
+APPROACH_LINEAR_MAX = 0.45      # m/s
 APPROACH_LINEAR_MIN = 0.08      # m/s floor so it keeps closing on the box
 APPROACH_ANGULAR_GAIN = 1.4
 APPROACH_ANGULAR_MAX = 0.7      # rad/s

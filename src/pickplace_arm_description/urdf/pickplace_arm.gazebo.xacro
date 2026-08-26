@@ -236,60 +236,78 @@
   <!-- Wrist RGB-D camera sensor (Gazebo Harmonic). camera_link is fixed to
        fr3_hand but survives the URDF->SDF fixed-joint merge because it
        carries a sensor. -->
-  <gazebo reference="camera_link">
-    <sensor name="rgbd_camera" type="rgbd_camera">
-      <topic>${ns_topic}/camera</topic>
-      <!-- 5 Hz, down from 30. RGB-D rendering is BY FAR the most expensive
-           thing in this simulation: two 640x480 rgbd_camera sensors at 30 Hz
-           held the real-time factor at 0.28 with the Gazebo GUI up (measured
-           on gazebo.launch.py alone, so this is the simulator itself, not the
-           ROS stack). Cutting both to what the code actually consumes took it
-           to 0.80, and the full mission stack with RViz and the GUI now runs
-           at RTF 1.000 - i.e. real time instead of roughly a quarter of it.
-           A 3-box run went from ~555 s of wall clock to ~355 s.
+  <!-- WRIST RGB-D: OPTIONAL, AND OFF FOR THE HOSPITAL FLEET.
 
-           5 Hz is generous for THIS camera. The wrist camera is only read by
-           detect_box_pose(), whose default timeout is 5.0 s, and the
-           pick-and-place mission never uses that path at all - it picks with
-           the front camera via grab_below(). So this sensor was rendering 30
-           frames a second for nothing. -->
-      <update_rate>5</update_rate>
-      <always_on>1</always_on>
-      <visualize>true</visualize>
-      <camera>
-        <horizontal_fov>1.047</horizontal_fov>
-        <image>
-          <width>640</width>
-          <height>480</height>
-          <format>R8G8B8</format>
-        </image>
-        <clip>
-          <near>0.05</near>
-          <far>5.0</far>
-        </clip>
-        <noise>
-          <type>gaussian</type>
-          <mean>0.0</mean>
-          <stddev>0.007</stddev>
-        </noise>
-      </camera>
-      <!-- camera_link, NOT camera_optical_link. Gazebo Harmonic's rgbd_camera
-           emits its PointCloud2 in the GZ BODY convention (X forward, Y left,
-           Z up), not the ROS optical one (Z forward, X right, Y down). Tagging
-           it with the optical frame was therefore a lie about the data, and
-           RViz - which, unlike the mission code, actually honours the header
-           frame - applied the optical->body rotation and drew the whole cloud
-           swung 90 deg out to the robot's side.
+       Nothing in the delivery mission reads it. That mission picks with
+       claw_approach() and grab_below(), both of which use the FRONT
+       camera; the wrist camera is only ever read by detect_box_pose(),
+       which belongs to the older single-robot pick path.
 
-           Measured off a live frame to settle which convention it really is:
-               x  +0.26 .. +7.21   (all positive: this is the depth axis)
-               y  -5.06 .. +5.60   (left/right)
-               z  -0.24 .. +4.28   (floor, 0.22 below the lens, up to ceiling)
-           i.e. unambiguously X-forward. See the front camera below for the
-           same fix and the reason nothing else changes. -->
-      <gz_frame_id>${ns_frame}camera_link</gz_frame_id>
-    </sensor>
-  </gazebo>
+       Rendering it anyway is not free, and it lands on the hottest
+       process in the system: gz sim server sits at ~94% of a core, and
+       three of these are 640x480 RGB-D renders at 5 Hz apiece for a
+       consumer that does not exist. With the simulation only managing
+       RTF 0.57, that shows up as everything, driving, timeouts,
+       the whole mission, running slow in wall-clock terms.
+
+       Left default-true so the single-robot launches that DO use it are
+       unaffected; hospital_fleet.launch.py passes wrist_camera:=false. -->
+  <xacro:if value="$(arg wrist_camera)">
+    <gazebo reference="camera_link">
+      <sensor name="rgbd_camera" type="rgbd_camera">
+        <topic>${ns_topic}/camera</topic>
+        <!-- 5 Hz, down from 30. RGB-D rendering is BY FAR the most expensive
+             thing in this simulation: two 640x480 rgbd_camera sensors at 30 Hz
+             held the real-time factor at 0.28 with the Gazebo GUI up (measured
+             on gazebo.launch.py alone, so this is the simulator itself, not the
+             ROS stack). Cutting both to what the code actually consumes took it
+             to 0.80, and the full mission stack with RViz and the GUI now runs
+             at RTF 1.000 - i.e. real time instead of roughly a quarter of it.
+             A 3-box run went from ~555 s of wall clock to ~355 s.
+
+             5 Hz is generous for THIS camera. The wrist camera is only read by
+             detect_box_pose(), whose default timeout is 5.0 s, and the
+             pick-and-place mission never uses that path at all - it picks with
+             the front camera via grab_below(). So this sensor was rendering 30
+             frames a second for nothing. -->
+        <update_rate>5</update_rate>
+        <always_on>1</always_on>
+        <visualize>true</visualize>
+        <camera>
+          <horizontal_fov>1.047</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.05</near>
+            <far>5.0</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
+        <!-- camera_link, NOT camera_optical_link. Gazebo Harmonic's rgbd_camera
+             emits its PointCloud2 in the GZ BODY convention (X forward, Y left,
+             Z up), not the ROS optical one (Z forward, X right, Y down). Tagging
+             it with the optical frame was therefore a lie about the data, and
+             RViz - which, unlike the mission code, actually honours the header
+             frame - applied the optical->body rotation and drew the whole cloud
+             swung 90 deg out to the robot's side.
+
+             Measured off a live frame to settle which convention it really is:
+                 x  +0.26 .. +7.21   (all positive: this is the depth axis)
+                 y  -5.06 .. +5.60   (left/right)
+                 z  -0.24 .. +4.28   (floor, 0.22 below the lens, up to ceiling)
+             i.e. unambiguously X-forward. See the front camera below for the
+             same fix and the reason nothing else changes. -->
+        <gz_frame_id>${ns_frame}camera_link</gz_frame_id>
+      </sensor>
+    </gazebo>
+  </xacro:if>
 
   <!-- 2D LIDAR sensor (Gazebo Harmonic gpu_lidar) for SLAM + Nav2 -->
   <gazebo reference="lidar_link">

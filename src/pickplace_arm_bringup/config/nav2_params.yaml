@@ -141,13 +141,30 @@ controller_server:
     # SIZED FOR THREE ROBOTS ON ONE MACHINE. The defaults are batch_size 2000
     # and time_steps 56, and three of those at 20 Hz is not affordable here --
     # this fleet has already lost whole missions to nav2_lifecycle_manager
-    # missing 2 s deadlines under load. 1000 x 36 keeps a 36 x 0.05 x 0.55 =
-    # 0.99 m horizon, which is longer than the 0.55 m/s robot needs to stop.
+    # missing 2 s deadlines under load.
+    #
+    # BATCH IS 600, DOWN FROM 1000, AND THE HORIZON IS DELIBERATELY UNTOUCHED.
+    # These two numbers cost the same per sample but do NOT buy the same thing.
+    # batch_size buys how densely the control space is sampled; time_steps buys
+    # how far ahead a sample looks. Only the second one is a safety property, so
+    # when the base got faster (0.55 -> 0.70 below) the horizon had to stay:
+    # 36 x 0.05 x 0.70 = 1.26 m of lookahead, still comfortably past the 0.65 m
+    # inflation radius, so the controller sees an obstacle inflated to its full
+    # cost before it is committed to reaching it.
+    #
+    # Cutting the batch instead is the cheap half. This is the single largest
+    # ROS-side consumer on this machine -- 1000 x 36 x 20 Hz x 3 robots is 2.16
+    # million trajectory points a second through eight critics -- and 600 takes
+    # that to 1.30 million. MPPI degrades gracefully in this direction: fewer
+    # samples means a slightly noisier optimum, not a blind one, and the
+    # softmax over 600 samples at temperature 0.3 is still averaging over a
+    # wide set. If paths start looking jittery rather than merely imperfect,
+    # this is the number to put back first.
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 36
       model_dt: 0.05
-      batch_size: 1000
+      batch_size: 600
       iteration_count: 1
       # vy is pinned to zero and stays there: this is a skid-steer, and the
       # DiffDrive motion model is what makes MPPI stop proposing sideways
@@ -156,10 +173,24 @@ controller_server:
       vx_std: 0.2
       vy_std: 0.0
       wz_std: 0.4
-      vx_max: 0.55
+      # 0.70 m/s, UP FROM 0.55, AND THE CEILING IS THE HARDWARE'S 0.80.
+      #
+      # diff_drive_controller has always allowed max_velocity 0.8 (see
+      # arm_controllers.yaml); MPPI was asking for 0.55, so every drive in
+      # this mission was running at 69% of what the base could already do,
+      # for no reason anyone recorded. The routes to the collection tables
+      # are 29-40 m, so this alone takes a 53-73 s drive to 41-57 s.
+      #
+      # NOT 0.80. Leaving 0.10 m/s under the limiter matters: at the ceiling
+      # the controller's acceleration limit (1.5 m/s^2) clips MPPI's command
+      # on every cycle where it asks to speed up, and a clipped command is
+      # one the optimiser did not plan for. Headroom keeps commanded and
+      # executed velocity the same thing.
+      vx_max: 0.70
       vx_min: -0.35
       vy_max: 0.0
-      wz_max: 1.9
+      # 2.0 rad/s against the controller's 2.2, for the same headroom reason.
+      wz_max: 2.0
       prune_distance: 1.7
       transform_tolerance: 0.2
       temperature: 0.3

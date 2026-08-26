@@ -51,6 +51,7 @@ import tf2_ros
 from rclpy.duration import Duration as RclDuration
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
+from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
@@ -549,13 +550,51 @@ class DeliveryMission(Mission2Hospital):
         log = self.get_logger()
         log.warn(f'[{self.ns}] no {colour} rack in view -- searching')
         self._drive_blind(-0.15, 2.0)
-        for step in range(8):
-            self._rotate_step(math.pi / 4.0)
-            if self.detect_box_front(timeout_sec=0.5, color=colour) is not None:
+        found = self._sweep_for_rack(colour)
+        if not found:
+            log.warn(f'[{self.ns}] full turn without seeing the {colour} rack')
+        return found
+
+    # Sweep rate. Faster than SPIN_ANGULAR's 0.5 because nothing is being
+    # measured precisely here -- the camera runs at 10 Hz, so at 0.7 rad/s
+    # successive frames are 4 deg apart and a 0.06 m grip block spanning ~15 px
+    # cannot fall between two of them.
+    SWEEP_ANGULAR = 0.7
+
+    def _sweep_for_rack(self, colour, sweep=2.0 * math.pi):
+        """Rotate continuously, watching the camera, and stop facing the rack.
+
+        WHY NOT _rotate_step. That turns 45 deg, STOPS, waits SPIN_SETTLE_SEC
+        for the base to damp, and only then looks -- so a full turn costs
+        8 x (1.57 s turn + 0.6 s settle + 0.5 s detect) = about 23 s, and the
+        rack is only ever noticed at one of eight fixed bearings. It was written
+        for a wrist camera that had to be still to capture cleanly; the front
+        camera does not, and in simulation there is no motion blur to avoid.
+
+        Sweeping while looking costs 10.5 s for the worst case (a full turn at
+        0.7 rad/s) and typically far less, because it stops the moment the rack
+        enters the frame -- which also leaves the base pointing AT it, so the
+        servo that follows starts centred instead of re-acquiring.
+        """
+        log = self.get_logger()
+        twist = Twist()
+        twist.angular.z = self.SWEEP_ANGULAR
+        turned = 0.0
+        t_prev = time.time()
+        while turned < sweep and rclpy.ok():
+            self.cmd_vel_pub.publish(twist)
+            det = self.detect_box_front(timeout_sec=0.15, color=colour)
+            now = time.time()
+            turned += self.SWEEP_ANGULAR * (now - t_prev)
+            t_prev = now
+            if det is not None:
+                self._stop_base()
+                # Let the chassis stop rocking before the servo takes over.
+                time.sleep(0.4)
                 log.info(f'[{self.ns}] {colour} rack found after '
-                         f'{(step + 1) * 45} deg of search')
+                         f'{math.degrees(turned):.0f} deg of sweep')
                 return True
-        log.warn(f'[{self.ns}] full turn without seeing the {colour} rack')
+        self._stop_base()
         return False
 
     def run_errand(self, colour, table, rack_xy, stand):
@@ -591,9 +630,13 @@ class DeliveryMission(Mission2Hospital):
             self.say('failed', 'could not reach the collection table')
             return False
 
+        # face_first=False: the approach loop above only exits once the camera
+        # has the rack in frame, so re-aiming from the map estimate can only
+        # make it worse. See claw_approach.
         if not self.claw_pick(rack_xy, color=colour,
                               grasp_z=self.LAYOUT_TABLE_GRASP_Z,
-                              x_offset=self.LAYOUT_TABLE_X_OFFSET):
+                              x_offset=self.LAYOUT_TABLE_X_OFFSET,
+                              face_first=False):
             self.say('failed', f'could not pick the {colour} rack')
             return False
         self.say('carrying', colour)

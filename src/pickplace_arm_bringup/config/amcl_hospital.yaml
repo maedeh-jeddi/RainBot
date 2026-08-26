@@ -106,17 +106,33 @@ amcl:
     sigma_hit: 0.2
     laser_likelihood_max_dist: 2.0
 
-    # A filter that only corrects every 0.25 m spends most of a 0.55 m/s drive
-    # running on odometry alone. Halving both makes it correct about twice as
-    # often for the same distance travelled, which is the other half of the
-    # tracking problem described above.
-    # 0.10 / 0.12, back up from 0.05 / 0.05. These were halved twice chasing
-    # the same phantom error described above, and each halving doubles how often
-    # the filter runs. 0.12 m still corrects roughly four times over the
-    # distance the old 0.25 did once, which is ample -- and it stays well inside
-    # the motion the relocalize spin produces when a robot has to recover.
-    update_min_a: 0.10
-    update_min_d: 0.12
+    # 0.18 / 0.20, RELAXED FROM 0.10 / 0.12, BECAUSE THE ERROR THEY WERE
+    # TIGHTENED AGAINST DID NOT EXIST.
+    #
+    # The history here is worth keeping straight. These started at 0.25 / 0.25,
+    # were halved to 0.05 / 0.05 and then set to 0.10 / 0.12, each step trying
+    # to chase down a 2.4-2.8 m "driving error". That error was an artifact of
+    # how it was being measured: `gz model -m <name> -p` takes 5.1-5.2 s per
+    # call in this world, so comparing it against a fresh TF lookup made every
+    # MOVING robot look mislocalised by speed x 5 s, in the direction of
+    # travel, equally on all three. The tell was that AMCL always read AHEAD of
+    # "truth" -- a stale TF would lag behind, so the stale sample had to be the
+    # gz one. There was never a tracking problem for these numbers to fix.
+    #
+    # What they did cost is real. Each halving doubles how often the filter
+    # runs, and a run is max_particles x max_beams -- up to 2000 x 90 beam
+    # evaluations. At 0.12 m and the new 0.70 m/s that is 5.8 filter updates a
+    # second per robot, 17 across the fleet. 0.20 m takes it to 3.5 and 10.
+    #
+    # 0.20 is not a return to the old 0.25: it still corrects five times over
+    # the distance a metre of driving covers, it stays well inside the motion
+    # the relocalize spin produces during recovery, and it is a fifth of the
+    # 1.0 m scale at which this map's corridors become ambiguous. The genuine
+    # errors in this project were all measured with the robot STATIONARY, where
+    # `gz model -p` is trustworthy, and none of them were a function of how
+    # often the filter ran.
+    update_min_a: 0.18
+    update_min_d: 0.20
     resample_interval: 1
     transform_tolerance: 1.0
     recovery_alpha_slow: 0.0
