@@ -10,9 +10,16 @@ is, so this slices the geometry directly: exact, repeatable, and it takes
 seconds. Re-run it whenever the world changes.
 
 WHAT IT SLICES, AND WHY IT MUST INCLUDE THE FURNITURE. Everything solid at the
-LIDAR's height, which is 0.4466 m above the floor (base_link sits 0.13228 m up,
-lidar_link another 0.3144 m above that). That means the building shell AND every
-prop.
+LIDAR's height, which is 0.3143 m above the floor (base_link sits 0.13228 m up,
+lidar_link 0.18204 m above that). That means the building shell AND every prop.
+
+THAT HEIGHT CHANGED, AND THIS FILE MUST BE RE-RUN WHENEVER IT DOES. The scanner
+used to stand on the top plate and scan at 0.4466 m; it now hangs inverted
+UNDER the plate and scans at 0.3143 m, so the fleet can see each other's
+chassis (see lidar_joint in pickplace_arm.urdf.xacro). A map sliced at a height
+the sensor does not scan is not a cosmetic mismatch: AMCL scores every scan
+endpoint against the nearest occupied cell in THIS image, so Z_LIDAR and that
+joint are one number in two places.
 
 The furniture is not optional, and leaving it out is not a small error. The
 first version of this map carried walls only, and the nurses' station - a
@@ -40,8 +47,10 @@ from scipy import ndimage
 
 from pickplace_arm_bringup.rack_table_layout import STATIC_TABLES, TABLE_SPAWN_Z
 
-# LIDAR height above the floor: base_link at 0.13228 + lidar_link at 0.3144.
-Z_LIDAR = 0.4466
+# LIDAR height above the floor: base_link at 0.13228 + lidar_link at 0.18204.
+# Keep in step with lidar_joint (pickplace_arm.urdf.xacro) and with
+# pick_and_place.LIDAR_SCAN_Z, which is the same measurement for the arm's use.
+Z_LIDAR = 0.3143
 RES = 0.05
 # The building's outer wall extents. The map is clipped to these because the
 # north wall has a 6 m entrance gap and a flood fill escapes the building
@@ -346,6 +355,12 @@ def main():
         precisely nothing -- which is what the first version of this did, and
         the map came out byte-identical to one with no tables in it at all.
 
+        THE LOWERED SCANNER DOES NOW CUT THESE TABLES (0.3143 m passes 9.5 mm
+        under a 0.3238 m top), so stamp() would leave a thin outline of each.
+        The hull fill stays anyway, and is still the right call: an outline is
+        what the sensor RETURNS, a filled footprint is what the planner has to
+        REFUSE, and a robot cannot drive between a coffee table's legs.
+
         What the planner needs is the floor area the prop denies it, so this
         projects every collision vertex down, takes the convex hull and fills
         it. The hull over-approximates a table with legs by including the air
@@ -409,11 +424,14 @@ def main():
     #                                        prop no longer is, is worse than one
     #                                        that was never drawn
     #
-    # STAMPING THE TABLES IS A TRADE-OFF AND IT IS WORTH BEING EXPLICIT ABOUT IT.
-    # A table top at 0.3238 m is BELOW the LIDAR's 0.4466 m scan plane, so the
-    # sensor can never return a point on one, and this file otherwise slices at
-    # exactly that plane. Stamping them therefore puts occupied cells in the map
-    # that no measurement will ever support.
+    # STAMPING THE TABLES USED TO BE A TRADE-OFF AND NO LONGER IS. While the
+    # scanner stood on the top plate at 0.4466 m it could never return a point
+    # on a 0.3238 m table, so stamping them put occupied cells in the map that
+    # no measurement would ever support -- accepted anyway, for the reason
+    # below. Hung under the plate at 0.3143 m the scan passes through the tops,
+    # so these cells are now measured like any other. The hull is still wider
+    # than the slice (it fills the space between the legs), which is the
+    # conservative direction.
     #
     # It is still right, because the costmaps have NO OTHER OBSTACLE SOURCE --
     # nav2_params.yaml gives them that same LIDAR and nothing else. A table left

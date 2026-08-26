@@ -42,8 +42,11 @@ import math
 # candidates this was the best by a clear margin.
 #
 # THEN RE-MEASURED AGAINST THE COLLISION MESHES AT EVERY HEIGHT, because the map
-# is a single horizontal slice at the LIDAR's 0.4466 m and the table (0.30 m
-# top) and two of the three columns live entirely underneath it. Slicing the
+# is a single horizontal slice at the LIDAR's height -- 0.4466 m when this was
+# written, 0.3143 m since the scanner was hung under the plate -- and the table
+# (0.30 m top) and two of the three columns live entirely underneath either of
+# them. Slicing at every height is what makes this measurement independent of
+# where the sensor sits, which is why it did not have to be redone. Slicing the
 # world's 204,863 collision triangles at 5 cm steps from 0.05 to 1.10 m gives,
 # centre of item to nearest solid thing:
 #

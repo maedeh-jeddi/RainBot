@@ -304,7 +304,7 @@ the ground, and `fr3_link0` stands directly on it.
 | --- | --- | --- | --- |
 | Front RGB-D | Intel RealSense **D455** | bolted flat on the chassis front panel | (0.425, 0, 0.091) → **0.223 m** off the floor |
 | Wrist RGB-D | Intel RealSense **D405** | side of the Franka Hand, looking along the approach axis | `fr3_hand` (0.043, 0, 0.04) |
-| 2D LIDAR | SICK **TiM5xx** (TiM571) | standing on the top plate | scan plane **0.447 m** off the floor, 270° arc |
+| 2D LIDAR | SICK **TiM5xx** (TiM571) | hung **inverted**, wholly under the top plate | scan plane **0.314 m** off the floor, 190° arc |
 | IMU | n/a | inside the chassis | (0, 0, 0.12) |
 
 Two geometry details that are easy to get wrong and are documented in the URDF:
@@ -312,6 +312,15 @@ Two geometry details that are easy to get wrong and are documented in the URDF:
 - The LIDAR mesh's base plate is **0.06296 m** below its laser centre, *not* the
   0.05595 that SICK's own macro declares. Using SICK's number sinks the housing
   into the top plate.
+- The LIDAR is mounted **upside down** (`rpy` roll = π) and hangs entirely under
+  the plate. That drops the scan plane by 0.1323 m into the 0.130–0.357 m band
+  the A200 chassis occupies, which is what lets the robots see *each other* — at
+  0.447 m a 2D scan passed clean over every other robot in the fleet. Its x is
+  pinned in an 18 mm window: the housing must not overhang the plate's lip at
+  0.4462, and its rear boss must not enter the chassis, which tapers to 0.3516
+  at the housing's lowest point. The arc narrows 270° → 190° because at chassis
+  height anything past ±104° is the robot's own front wheel, and the Nav2 map
+  must be regenerated to match (`aws_hospital_map.Z_LIDAR`).
 - Clearpath's `wheel.dae` is a 7-inch-radius tyre while every other A200 number
   says 6.5 inch. The visual mesh is therefore scaled by `0.1651/0.1778` in its
   two radial axes, or the wheels render 12.7 mm into the ground.

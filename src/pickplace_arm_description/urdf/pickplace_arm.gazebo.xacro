@@ -313,22 +313,80 @@
   <gazebo reference="lidar_link">
     <sensor name="lidar" type="gpu_lidar">
       <topic>${ns_topic}/scan</topic>
-      <update_rate>10</update_rate>
+      <!-- 15 Hz, up from 10. THIS SCAN IS NOW THE FLEET'S ANTI COLLISION
+           SENSE, not just a wall finder, and a closing speed matters to it.
+           Two robots approaching head on at the raised 0.90 m/s vx_max close
+           0.18 m between frames at 10 Hz and 0.12 m at 15 Hz. The local costmap
+           is raised to 15 Hz alongside it (nav2_params.yaml), so every costmap
+           update now has a scan it has not already seen, which is what makes
+           the avoidance FASTER rather than merely better informed.
+
+           IT IS ALSO THE CHEAPEST PLACE IN THIS SYSTEM TO SPEND. A gpu_lidar is
+           rendered on the GPU, which sits near idle on this machine while the
+           CPU is the thing that runs out, and the ROS side cost is a LaserScan
+           of a few hundred floats against the ~33 MB/s per robot the RGB-D
+           clouds already push through one bridge. -->
+      <update_rate>15</update_rate>
       <always_on>1</always_on>
       <visualize>true</visualize>
       <lidar>
         <scan>
-          <!-- 270 deg forward arc (-135..+135 deg); the excluded 90 deg
-               wedge points straight back at the arm, so the scan never hits
-               it. With the FR3 at x=0.0799 and this sensor at x=0.4449 the
-               arm subtends only ~+/-21 deg about the 180 deg bearing, well
-               inside the wedge. 270 samples keeps the same ~1 deg/sample
-               resolution as a 360-sample full circle. -->
+          <!-- 190 deg forward arc (-95..+95 deg), DOWN FROM 270, and the cut is
+               forced by the mount rather than chosen.
+
+               Hung under the plate the sensor scans at 0.3143 m, which is
+               chassis height, so for the first time the robot's own body is in
+               the scan plane. Two things are in it, and both were sliced out of
+               the meshes rather than guessed. From the laser centre at
+               base_link x=0.4100:
+
+                 front wheels   cross section at this height is x 0.185..0.327,
+                                y 0.220..0.335 (a cylinder cut off axis). Its
+                                forward outer corner bears 104.0 deg.
+                 chassis        tapers to x=0.3268, y +/-0.2104 here. Its front
+                                corner bears 111.6 deg.
+
+               So everything past 104 deg is the robot looking at itself. Those
+               hits are not harmlessly short either. Measured on one robot alone
+               on an empty ground plane with this mount and the old 270 deg arc:
+
+                   beams   1..46   bearing -134.5 .. -112.0 deg   0.184..0.362 m
+                   beams 494..539  bearing +112.5 .. +135.0 deg   0.172..0.357 m
+
+               (that run had the sensor 45 mm further forward, which is why its
+               boundary is 112 deg rather than 104 - the same model predicts
+               111.0 for it, so the model is good to about a beam). 92 of 540
+               beams reporting a solid obstacle a quarter of a metre away, above
+               range_min so nothing downstream filters them: a permanent phantom
+               wall in both costmaps and a block of beams AMCL can never match.
+
+               95 deg keeps 9 deg of margin to the wheel corner and is verified
+               empty: 0 of 380 beams return on a clear plane, and 34 of 380 - a
+               16.6 deg block at 2.21..2.33 m - when another robot stands 3 m
+               ahead.
+
+               WHAT IS GIVEN UP is the two rear quadrants; the blind sector goes
+               from 90 deg to 170. That is simply what a body height scanner on
+               the nose of a 0.99 m robot can see, and it buys the ability to
+               see other robots and the furniture AT ALL, which the 270 deg
+               version did not have.
+
+               270 samples over 190 deg = 0.70 deg, FINER than the 1.0 deg the
+               270 deg version had, on a third fewer beams. The things this
+               mount exists to detect are narrow - a table leg or a chair frame
+               subtends about 0.6 deg at 5 m and could fall between 1 deg beams
+               entirely - so the resolution matters and it improves here.
+               380 samples (0.5 deg) was tried and given back: the render is GPU
+               side and free, but every beam is raytraced into TWO costmaps per
+               robot, and at 15 Hz x 3 robots that is the difference between
+               4050 and 5700 rays a second of CPU. The real-time factor is what
+               the wall clock actually measures. AMCL subsamples to
+               max_beams=90 either way. -->
           <horizontal>
             <samples>270</samples>
             <resolution>1</resolution>
-            <min_angle>-2.35619449</min_angle>
-            <max_angle>2.35619449</max_angle>
+            <min_angle>-1.65806279</min_angle>
+            <max_angle>1.65806279</max_angle>
           </horizontal>
         </scan>
         <range>

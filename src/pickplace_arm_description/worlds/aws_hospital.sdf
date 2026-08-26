@@ -17,7 +17,7 @@
      THE CEILING blocks any view from above. It is the last model in the file
      and named `hospital_ceiling`, so it can be unticked in the entity tree
      when you want to look down into the building. Nothing about the robot
-     depends on it: the LIDAR scans a horizontal plane 0.447 m off the floor
+     depends on it: the LIDAR scans a horizontal plane 0.314 m off the floor
      and the RGB-D cameras look forward. -->
 <sdf version='1.7'>
   <world name='aws_hospital'>

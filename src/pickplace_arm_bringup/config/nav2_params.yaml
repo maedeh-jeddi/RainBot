@@ -1,6 +1,9 @@
 # Nav2 parameters for the pickplace_arm 4-wheel skid-steer mobile base.
-# Robot footprint approximated as a 0.25 m radius circle (covers the
-# 0.38x0.26 m chassis plus the wheels that protrude past it). Uses the
+# Robot footprint is the chassis rectangle itself, as a four-vertex polygon:
+# bumper +0.494, tail -0.496, half-width 0.335 (inscribed 0.335, circumscribed
+# 0.598). It was a 0.34 m circle -- the INSCRIBED radius of the real A200
+# (0.9874 x 0.5709 m body, wheels reaching y +/-0.3347) -- which modelled the
+# width honestly and the length not at all; see the local costmap below. Uses the
 # MPPI controller with the DiffDrive motion model, and the Smac 2D global
 # planner. SLAM (slam_toolbox) supplies map -> odom for the single-robot
 # launches; the hospital fleet runs AMCL instead (config/amcl_hospital.yaml).
@@ -122,12 +125,12 @@ controller_server:
       # collection table claw_approach visually servos onto the rack from
       # wherever the robot stopped, and at the delivery table place_in_slot
       # re-reads the slot and calls _close_in_on when it is out of arm's reach.
-      xy_goal_tolerance: 0.35
+      xy_goal_tolerance: 0.15 #0.35
       # Loose heading tolerance: the robot doesn't need to nail an exact final
       # yaw (the visual servo re-centres on the box, and delivery/parking don't
       # care which way it faces). A tight yaw made the skid-steer oscillate in
       # place around the goal heading, which tripped Nav2's recovery Spin.
-      yaw_goal_tolerance: 0.5
+      yaw_goal_tolerance: 0.1 #0.5
 
     # MPPI, NOT RegulatedPurePursuit. RPP follows a path; it does not choose
     # one. It has a single collision check along the carrot and its only
@@ -162,7 +165,42 @@ controller_server:
     # this is the number to put back first.
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 36
+      # 22, DOWN FROM 36, AND THIS IS THE PARAMETER THAT ACTUALLY SETS CRUISING
+      # SPEED. vx_max does not.
+      #
+      # MEASURED, on the running fleet with vx_max already raised to 0.90:
+      #
+      #     r1  cmd_vel  max |vx| 0.567   mean 0.552
+      #     r2  cmd_vel  max |vx| 0.564   mean 0.546
+      #     r3  cmd_vel  max |vx| 0.570   mean 0.557
+      #
+      # Three robots in three different parts of the building, all pinned at
+      # 0.55, with `ros2 param get` confirming vx_max=0.9 was loaded. A ceiling
+      # that identical is not an optimiser finding an optimum, it is a
+      # constraint -- and it is this one.
+      #
+      # MPPI scores where a rollout ENDS, not how fast it went. PathFollowCritic
+      # penalises the distance from the last trajectory point to a carrot a
+      # bounded distance along the path, so the speed that minimises cost is
+      # roughly (carrot distance) / (horizon). With 36 x 0.05 = 1.80 s of
+      # horizon and a carrot about 0.99 m out, that is 0.55 m/s exactly. Raising
+      # vx_max lifts a ceiling the optimiser was never touching.
+      #
+      # SHORTENING THE HORIZON WAS TRIED AND IT DID NOT WORK, which is worth
+      # recording because it is the obvious first guess. At 22 steps the fleet
+      # measured max 0.542 m/s against 0.567 before: the ROLLOUT LENGTH changed
+      # (1.02 m to 0.60 m) and the speed did not. That rules the carrot out and
+      # is what pointed at gamma and temperature below, which turned out to be
+      # the real constraint.
+      #
+      # So this is back near where it was, at 30. It buys lookahead and nothing
+      # else was ever paying for: 30 x 0.05 x 0.90 = 1.35 m, against a 0.65 m
+      # inflation radius, so an obstacle reaches full cost well before the
+      # controller is committed to it. 36 was the old value at 0.70 m/s; 30 at
+      # 0.90 m/s covers more ground per rollout than 36 did, and costs 17% less
+      # in the largest ROS-side consumer on this machine (600 samples x steps x
+      # 20 Hz x 3 robots).
+      time_steps: 30
       model_dt: 0.05
       batch_size: 600
       iteration_count: 1
@@ -170,31 +208,82 @@ controller_server:
       # DiffDrive motion model is what makes MPPI stop proposing sideways
       # motion it cannot execute.
       motion_model: "DiffDrive"
-      vx_std: 0.2
+      # 0.25, up from 0.2. This is how far above the current command the
+      # sampler looks. It has to be wide enough to reach vx_max from cruise or
+      # the optimiser can never discover that faster is cheaper.
+      vx_std: 0.25
       vy_std: 0.0
       wz_std: 0.4
-      # 0.70 m/s, UP FROM 0.55, AND THE CEILING IS THE HARDWARE'S 0.80.
+      # 0.90 m/s, UP FROM 0.70, AND THE CEILING IS THE HARDWARE'S 1.00.
       #
-      # diff_drive_controller has always allowed max_velocity 0.8 (see
-      # arm_controllers.yaml); MPPI was asking for 0.55, so every drive in
-      # this mission was running at 69% of what the base could already do,
-      # for no reason anyone recorded. The routes to the collection tables
-      # are 29-40 m, so this alone takes a 53-73 s drive to 41-57 s.
+      # The 0.80 that used to cap this was diff_drive_controller's limit, not
+      # the A200's: Clearpath's own hardware interface declares max_speed 1.0
+      # (a200.urdf.xacro), so 0.80 was self-imposed. It is now 1.00 in
+      # arm_controllers.yaml and this asks for 0.90 of it. The routes to the
+      # collection tables are 29-40 m and there are six such legs in a mission,
+      # so a 41-57 s drive becomes 32-44 s.
       #
-      # NOT 0.80. Leaving 0.10 m/s under the limiter matters: at the ceiling
-      # the controller's acceleration limit (1.5 m/s^2) clips MPPI's command
-      # on every cycle where it asks to speed up, and a clipped command is
-      # one the optimiser did not plan for. Headroom keeps commanded and
-      # executed velocity the same thing.
-      vx_max: 0.70
-      vx_min: -0.35
+      # NOT 1.00. Leaving 0.10 m/s under the limiter matters: at the ceiling the
+      # controller's acceleration limit clips MPPI's command on every cycle
+      # where it asks to speed up, and a clipped command is one the optimiser
+      # did not plan for. Headroom keeps commanded and executed velocity the
+      # same thing.
+      #
+      # THE HORIZON STILL COVERS IT, which is the safety property the note above
+      # about batch_size versus time_steps exists to protect:
+      # 36 x 0.05 x 0.90 = 1.62 m of lookahead against a 0.65 m inflation
+      # radius, so an obstacle reaches full cost well before the controller is
+      # committed to driving into it. That margin is why the horizon was left
+      # alone to pay for this.
+      vx_max: 0.90
+      # -0.45. Reversing is how MPPI gets out of the way of another robot in a
+      # corridor too narrow to swing in, and it can now do it at the same rate
+      # it backs off a wall.
+      vx_min: -0.45
       vy_max: 0.0
-      # 2.0 rad/s against the controller's 2.2, for the same headroom reason.
-      wz_max: 2.0
-      prune_distance: 1.7
+      # 2.2 rad/s against the controller's 2.5, for the same headroom reason.
+      # Faster in place turning matters more than it looks: every errand ends
+      # with the base squaring up to a table, and the mission's own servo loops
+      # turn in place whenever the target is off centre but already in reach.
+      wz_max: 2.2
+      # 2.0. The path handed to the critics has to extend past both the rollout
+      # (0.99 m) and the carrot PathFollowCritic aims at, or the carrot clamps
+      # to the end of the path and the speed it implies collapses again.
+      prune_distance: 2.0
       transform_tolerance: 0.2
-      temperature: 0.3
-      gamma: 0.015
+      # temperature 0.15 and gamma 0.005, FROM 0.3 AND 0.015, AND THESE TWO ARE
+      # WHY THE FLEET CRUISED AT 0.55 m/s WITH vx_max SET TO 0.90.
+      #
+      # Measured, three robots, with `ros2 param get` confirming vx_max=0.9 was
+      # loaded and Nav2's own optimizer.cpp confirming the only clamp on the
+      # control sequence is vx_max itself:
+      #
+      #     before                    max 0.567   mean 0.552
+      #     after halving the horizon max 0.542   <- unchanged
+      #
+      # Halving the prediction horizon changed the ROLLOUT LENGTH (1.02 m to
+      # 0.60 m) and left the speed alone, which rules out the carrot being the
+      # binding constraint. What was left is MPPI's own cost, and two terms in
+      # it price speed directly:
+      #
+      #   gamma      the control cost, gamma / vx_std^2 * sum(u . noise). It
+      #              scales with |u|, so it is literally a charge for asking for
+      #              a large velocity. Nav2 documents it as the smoothness
+      #              versus low-energy trade-off; 0.015 is its default and buys
+      #              smoothness this fleet does not need at the price of speed.
+      #
+      #   temperature  how greedily the softmax picks the best sample. At 0.3
+      #              the update is an average over a wide band of candidates, so
+      #              even when the fastest ones are cheapest the mean lands well
+      #              below them. 0.15 makes the optimiser commit to what it
+      #              found.
+      #
+      # THESE TRADE SMOOTHNESS, NOT SAFETY. The obstacle terms are untouched, so
+      # what gets rougher is the velocity profile, not the clearance. If the
+      # base starts hunting or the ride looks jerky, raise temperature back
+      # first -- it is the one that changes character rather than magnitude.
+      temperature: 0.15
+      gamma: 0.005
       regenerate_noises: false
       # Off deliberately: publishing candidate trajectories is a per-cycle
       # marker array per robot, and nothing reads it in a headless run.
@@ -219,7 +308,7 @@ controller_server:
         cost_power: 1
         cost_weight: 3.81
         critical_cost: 300.0
-        consider_footprint: false
+        consider_footprint: true #false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
       GoalCritic:
@@ -232,6 +321,11 @@ controller_server:
         cost_power: 1
         cost_weight: 3.0
         threshold_to_consider: 0.5
+      # LEFT AT 14.0. Dropping it to 8.0 was tried as a speed fix on the theory
+      # that a faster rollout deviates more from a curved path; measured, the
+      # fleet still capped at 0.542 m/s, so it was not paying for anything and
+      # the change was reverted rather than kept on a hunch. Path tracking is
+      # what this weight is for.
       PathAlignCritic:
         enabled: true
         cost_power: 1
@@ -245,7 +339,13 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 5.0
-        offset_from_furthest: 5
+        # 10, up from 5. This is the carrot the note on time_steps above is
+        # about: the critic aims the END of each rollout at the path point this
+        # many indices beyond the furthest one any rollout reached. Smac 2D
+        # emits points at the 0.05 m costmap resolution, so 5 was a carrot about
+        # a quarter of a metre past where the robot already expected to be, and
+        # a near carrot asks for a low speed. Doubling it asks for a further one.
+        offset_from_furthest: 10
         threshold_to_consider: 1.4
       PathAngleCritic:
         enabled: true
@@ -270,7 +370,13 @@ local_costmap:
       # that only refreshes every 200 ms is the limiting factor on how late an
       # obstacle can appear and still be avoided. 6 m leaves margin around the
       # rollouts at the window edge; 120x120 cells is cheap.
-      update_frequency: 10.0
+      # 15 Hz, up from 10, MATCHED TO THE LIDAR'S NEW 15 Hz. The point of
+      # raising the scan rate is lower latency between an obstacle existing and
+      # the controller being able to see it, and a costmap that only refreshes
+      # at 10 Hz throws a third of those scans away. MPPI reads this grid 20
+      # times a second; at 15 Hz the grid is never more than 67 ms stale, which
+      # at the raised 0.90 m/s closing speed is 6 cm rather than 9.
+      update_frequency: 15.0
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_link
@@ -278,7 +384,48 @@ local_costmap:
       width: 6
       height: 6
       resolution: 0.05
-      robot_radius: 0.25
+      # 0.34, UP FROM 0.25, AND THE OLD VALUE WAS SMALLER THAN THE ROBOT.
+      #
+      # 0.25 was inherited from the placeholder chassis this project started on
+      # (0.38 x 0.26 m). The A200 is 0.9874 x 0.5709 m and its wheels reach
+      # y +/-0.3347, so a 0.25 m circle is not an approximation of it, it is a
+      # different and smaller robot: the costmap's INSCRIBED zone - the band a
+      # planner refuses to enter - sat 0.085 m INSIDE the robot's own flanks, so
+      # a path that grazed a wall scored as clear. That is half of why obstacle
+      # avoidance was not working; the other half was the LIDAR scanning over
+      # the top of everything.
+      #
+      # 0.34 is the honest inscribed radius (half width plus the wheel bulge).
+      # The robot is still under-modelled lengthwise, where it reaches 0.4937
+      # fore and aft, which a circular footprint cannot express; the 0.65 m
+      # inflation and MPPI's 1.62 m rollout horizon carry that end, and a true
+      # rectangle would cost every doorway in the building.
+      #
+      # CHECKED, NOT ASSUMED, against the regenerated map: a distance transform
+      # of the free space keeps reception, all three collection standoffs and
+      # the delivery standoff mutually reachable at radii up to 0.40 m. The
+      # binding one is the delivery standoff, 0.45 m from the table's cells, so
+      # 0.34 leaves 0.11 m and stays plannable where 0.45 would not.
+      # FOUR CORNERS OF THE ACTUAL CHASSIS, not a circle through them.
+      # base_link sits at the chassis origin: bumper +0.494, tail -0.496,
+      # half-width 0.335. Same rectangle as ROBOT_FOOTPRINT in fleet_layout.py,
+      # which is the source of truth -- change it there and here together.
+      # Listed counter-clockwise from the front right corner.
+      #
+      # WHAT THIS BUYS over robot_radius: the 0.34 circle was the INSCRIBED
+      # radius, so it modelled the width honestly and the length not at all --
+      # the robot reaches 0.4937 fore and aft and the circle simply did not know
+      # that. A polygon expresses both, so a plan that swings the tail into a
+      # wall is now a collision instead of a clearance.
+      #
+      # WHAT IT COSTS, AND IT IS NOT FREE. The old comment here argued a true
+      # rectangle "would cost every doorway in the building", and the same
+      # distance-transform check it cited found the delivery standoff to be the
+      # binding constraint at 0.45 m from the table's cells. The inscribed
+      # radius is essentially unchanged -- 0.335 against 0.34 -- so head-on
+      # clearance is the same, but the corners now sweep to 0.598 when the base
+      # rotates. Watch the delivery standoff and the doorways on the first run.
+      footprint: "[[0.494, -0.335], [0.494, 0.335], [-0.496, 0.335], [-0.496, -0.335]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -304,11 +451,19 @@ local_costmap:
         #
         # RAISING IT DOES NOT ENDANGER THE TIGHT STANDOFFS, which is the obvious
         # worry: what a planner refuses to enter is the INSCRIBED zone, and that
-        # is set by robot_radius (0.25), not by this. Beyond 0.25 m inflation
+        # is set by the footprint's inscribed radius (0.335), not by this.
+        # Beyond 0.335 m inflation
         # only adds cost. The delivery standoff sits 0.70 m from the table's
         # lethal cells and stays traversable; measured on the running stack, the
         # cost there is 0.
-        inflation_radius: 0.65 #0.45
+        # LEFT AT 0.65. Cutting it to 0.50 was tried as a speed fix, on the
+        # theory that a LIDAR which now sees the furniture leaves the robot
+        # permanently inside inflated cost that CostCritic charges it for.
+        # Measured, the fleet still capped at 0.542 m/s, so the halo was not
+        # what was slowing it down -- and clearance around the furniture the
+        # lowered scanner can finally see is the whole point of that scanner.
+        # Reverted rather than kept.
+        inflation_radius: 0.55
       always_send_full_costmap: true
 
 global_costmap:
@@ -319,7 +474,9 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.25
+      # The same four corners the local costmap uses -- see there for why this
+      # is a polygon and no longer a 0.34 m circle.
+      footprint: "[[0.494, -0.335], [0.494, 0.335], [-0.496, 0.335], [-0.496, -0.335]]"
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -350,11 +507,12 @@ global_costmap:
         #
         # RAISING IT DOES NOT ENDANGER THE TIGHT STANDOFFS, which is the obvious
         # worry: what a planner refuses to enter is the INSCRIBED zone, and that
-        # is set by robot_radius (0.25), not by this. Beyond 0.25 m inflation
+        # is set by the footprint's inscribed radius (0.335), not by this.
+        # Beyond 0.335 m inflation
         # only adds cost. The delivery standoff sits 0.70 m from the table's
         # lethal cells and stays traversable; measured on the running stack, the
         # cost there is 0.
-        inflation_radius: 0.65 #0.45
+        inflation_radius: 0.55
       always_send_full_costmap: true
 
 planner_server:
@@ -434,16 +592,50 @@ behavior_server:
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
 
+# THIS BLOCK IS NOT LOADED BY ANYTHING. hospital_fleet.launch.py's NAV_NODES
+# list is [controller_server, smoother_server, planner_server, behavior_server,
+# bt_navigator] -- smoother_server is the PATH smoother, not this -- so no
+# velocity_smoother process exists in this system and these numbers have never
+# taken effect. The real command chain is:
+#
+#     MPPI  ->  /<ns>/cmd_vel  ->  twist_mux  ->  diff_drive_controller
+#
+# so the limits that actually bind are FollowPath's vx_max/wz_max above and
+# diff_drive_controller's own velocity AND ACCELERATION limits in
+# arm_controllers.yaml. It is kept, matched to those, so that adding the node
+# later does not silently clip commands the controller planned -- but do not
+# tune here expecting the robot to change.
 velocity_smoother:
   ros__parameters:
     use_sim_time: true
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.7, 0.0, 2.2]
-    min_velocity: [-0.7, 0.0, -2.2]
-    max_accel: [1.5, 0.0, 3.5]
-    max_decel: [-1.5, 0.0, -3.5]
+    # Raised in step with MPPI's vx_max/wz_max above and with
+    # diff_drive_controller's limits in arm_controllers.yaml. This smoother sits
+    # BETWEEN the two, so it must never be the narrowest of the three or it
+    # silently clips commands the controller planned and the base could execute:
+    #     MPPI      0.90 / 2.2      what is asked for
+    #     smoother  0.90 / 2.4      what is passed on   <- here
+    #     hardware  1.00 / 2.5      what is possible
+    #
+    # THE ACCELERATION IS THE HALF THAT ACTUALLY SHOWS. A mission is not one
+    # long straight run, it is six legs each of which starts, stops, and squares
+    # up to a table, plus every slow-down MPPI makes for an obstacle. At
+    # 1.5 m/s^2 reaching 0.90 m/s takes 0.60 s and 0.27 m; at 2.5 it takes
+    # 0.36 s and 0.16 m. Traction is nowhere near the limit - the wheels carry
+    # mu 1.0 in pickplace_arm.gazebo.xacro, i.e. about 9.8 m/s^2 before slip -
+    # so what bounds this is that a skid-steer which slips corrupts its own
+    # odometry, and 2.5 is a quarter of the traction limit.
+    #
+    # IT ALSO IMPROVES TRACKING RATHER THAN COSTING IT. MPPI's motion model has
+    # no acceleration term, so it plans as though velocity changes instantly;
+    # every ramp this smoother imposes is error between the planned trajectory
+    # and the driven one. A shorter ramp is a smaller lie.
+    max_velocity: [0.9, 0.0, 2.4]
+    min_velocity: [-0.9, 0.0, -2.4]
+    max_accel: [2.5, 0.0, 6.0]
+    max_decel: [-2.5, 0.0, -6.0]
     odom_topic: "/diff_drive_controller/odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

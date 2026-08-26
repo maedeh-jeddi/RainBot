@@ -46,6 +46,14 @@ import math
 TABLE_LONG = 1.327
 TABLE_SHORT = 0.668
 TABLE_TOP = 0.3238
+# Distance from the table's origin to the face the robot approaches, MEASURED
+# off aws_CoffeeTable_01_collision.DAE rather than taken as TABLE_SHORT/2. The
+# collision mesh is a solid block y -0.330..+0.339 at every height from the
+# floor to the top -- it is not a top on legs, and it is not symmetric. 0.330 is
+# the number that matters: it is what the base has to stand clear of, and it is
+# what the front camera sees when it measures the table directly (see
+# _table_face_ahead in mission_delivery.py).
+TABLE_NEAR_FACE = 0.330
 # Spawn z is the model origin, and this model's origin is at its FEET, so it
 # spawns at 0 and its top lands at TABLE_TOP.
 TABLE_SPAWN_Z = 0.0
@@ -136,8 +144,50 @@ STANDOFF_LOCAL_Y = RACK_LOCAL_Y - NAV_STANDOFF             # -1.484
 # robot still stands 0.416 m from the table edge -- 0.166 m of bumper clearance,
 # and comfortably outside the 0.25 m inscribed zone that would make the standoff
 # unplannable.
-DELIVERY_SLOT_LOCAL_Y = 0.0
-DELIVERY_NAV_STANDOFF = 0.75
+# THREE: THE STANDOFF WAS A POSE THE ROBOT CANNOT PHYSICALLY OCCUPY, and that
+# is what was really wrong here. Everything above reasons about reach; nothing
+# checked whether the base fits.
+#
+# rack_table's collision geometry is NOT a table with legs. Sliced every 2 cm
+# from the floor to its top it is a SOLID BLOCK, x -0.657..+0.670,
+# y -0.330..+0.339, at every height. So the robot cannot put any part of itself
+# inside local y > -0.330, and a Husky's front bumper is 0.4937 m ahead of
+# base_link. The nearest the base can stand is therefore
+#
+#     0.330 + 0.4937 = 0.8237 m from the table centre
+#
+# and the old numbers put it at 0.750 -- i.e. commanded 74 mm INSIDE the table.
+# Nav2 was being asked to drive into a wall. It never arrived; it jammed
+# wherever the contact stopped it, which is why the delivery approach needed
+# relocalisations and retries, and why the reach cap then silently clamped the
+# placement short and left the rack near the front edge.
+#
+# THE NUMBERS BELOW ARE SOLVED, NOT NUDGED. Writing R for the robot's local y,
+# S for the slot's, D for the standoff and c for the clearance to the table:
+#
+#     R = S - D                      the robot sits D behind the slot
+#     R + 0.4937 <= -0.330 - c       the bumper must clear the block
+#     D <= reach(py)                 the arm must make it
+#
+# so the deepest reachable slot is S = D - 0.8237 - c, maximised by taking D as
+# large as the arm allows. With ARM_REACH_FRACTION at 0.95 the arm reaches
+# 0.835 m at the outer slots' 0.12 m lateral offset, so D = 0.81 leaves 25 mm of
+# reach margin and c = 0.05 leaves 50 mm of bumper clearance:
+#
+#     slots      local y -0.065      robot centre local y -0.875
+#     bumper     local y -0.381      table's face -0.330   -> 49 mm clear
+#     rack face  local y -0.145      -> 185 mm of table in front of the rack
+#
+# THE RACK CANNOT GO DEEPER THAN THIS, and it is worth being explicit about why
+# rather than leaving it to be re-litigated. Once the base stands clear of the
+# block at 0.8237 m, reaching the table's CENTRE LINE needs 0.824 m of arm at
+# the middle slot and 0.884 m at the outer ones, against an FR3 whose measured
+# TCP limit is 0.855 m and which returned NO_IK_SOLUTION at 0.849. The far half
+# of this table is not reachable by this robot at all. What was fixed is the
+# variance, not the depth: the rack now lands at a repeatable 185 mm from the
+# edge instead of wherever the reach clamp happened to stop it.
+DELIVERY_SLOT_LOCAL_Y = -0.065
+DELIVERY_NAV_STANDOFF = 0.81
 DELIVERY_STANDOFF_LOCAL_Y = DELIVERY_SLOT_LOCAL_Y - DELIVERY_NAV_STANDOFF
 
 
@@ -163,8 +213,10 @@ def _robot_yaw(table):
 # robot radius -- i.e. a Husky can genuinely drive there.
 #
 # THE MAP CANNOT BE THE ONLY CHECK, AND THAT IS NOT A DETAIL HERE. The map is
-# one horizontal slice at the LIDAR's 0.4466 m, and these tables are 0.32 m
-# tall -- entirely underneath it. The first two placements this search produced
+# ONE horizontal slice at whatever height the LIDAR sits (0.4466 m when this
+# search was run, 0.3143 m now), and one slice cannot describe a building full
+# of things of different heights -- these tables are 0.32 m tall and were
+# entirely underneath the old one. The first two placements this search produced
 # passed the map easily and turned out to have 0.00 m and 0.10 m of real
 # clearance, because something low sat exactly there. Every pose below is scored
 # against the collision meshes sliced every 5 cm from 0.05 m to 1.15 m instead.
@@ -203,8 +255,40 @@ def _robot_yaw(table):
 # so there is no doorway in the problem at all.
 #
 # (name, colour of the rack it carries, table x, y, yaw)
+# COLLECT_0 MOVED WEST 0.40 m, FROM x=-8.50, AND IT IS THE SAME MISTAKE
+# COLLECT_2 ALREADY TAUGHT THIS FILE.
+#
+# The lesson two blocks up says a robot needs 1.196 m to turn and that a gap the
+# table narrowed to 1.25 m wedged it. Measured against the world's collision
+# meshes, unioned over every height a robot occupies (0.05 to 1.15 m), collect_0
+# stood in a 5.75 m bay with its clearances split:
+#
+#     west of the table   3.24 m
+#     east of the table   1.19 m      <- against 1.196 m needed to turn
+#
+# i.e. the east side was 6 mm UNDER the turning requirement while the west side
+# had three metres going spare, and the red robot kept hitting the table. That
+# is not a tuning problem, it is the collect_2 failure a second time: a route
+# that "exists" on a map eroded by the robot radius is not one Nav2 can drive
+# with a real 0.99 x 0.67 m rectangle and a pose estimate with its own error.
+#
+# x=-8.90 rebalances the bay rather than just nudging the number:
+#
+#     west 2.84 m   east 1.59 m   standoff clearance 1.15 m
+#     back-out strip 0.71 m       table footprint 0.38 m
+#
+# so the failing dimension goes from 0.00 m of margin to 0.39 m, and nothing
+# else drops near its own limit (a robot needs 0.598 m of clearance to occupy a
+# spot at all). Further west is worse, not better: the standoff and the back-out
+# strip both shrink as the table approaches the room boundary west of it, and
+# past x=-9.15 the back-out strip falls under 0.598 m, so the robot could reach
+# the table and not get out again.
+#
+# THE STANDOFF MOVES WITH THE TABLE, which is why this fixes the approach and
+# not the final few centimetres: everything in this module is derived from the
+# table pose, so the robot still stops NAV_STANDOFF short of the same rack.
 COLLECTION_TABLES = [
-    ('collect_0', 'red',   (-8.50,  -5.00, math.pi)),      # west wing, north end
+    ('collect_0', 'red',   (-8.90,  -5.00, math.pi)),      # west wing, north end
     ('collect_1', 'green', (8.50, -19.50, 0.0)),           # east wing, south
     ('collect_2', 'blue',  (-7.50, -26.50, 3.0 * math.pi / 2)),   # far south hall
 ]
@@ -226,7 +310,19 @@ DELIVERY_TABLE = ('delivery', (-3.50, 10.00, math.pi))
 # graze them, and enough that the front camera sees a single rack rather than a
 # smear of three. Three slots span 0.60 m inside a 1.327 m top, so the outer two
 # still have 0.30 m of table beyond them.
-DELIVERY_SLOT_SPACING = 0.30
+# 0.26, down from 0.30, and NOT the 0.24 an earlier pass here argued for. That
+# pass asked "how far can the arm reach at +/-0.30 of lateral offset" and got
+# 0.794 m, less than the 0.8237 m the base must stand back, and concluded the
+# slots had to come in. The question was the wrong way round. Reach is one
+# sphere: once the BASE is at the right distance -- which the camera now
+# guarantees, see _table_face_ahead in mission_delivery.py -- the slot sits at
+# px = 0.81 and the arm has +/-0.329 m of lateral room there. The lateral offset
+# was never the constraint; the DEPTH was, and it was being missed by 0.2 m of
+# AMCL error rather than by geometry.
+#
+# 0.26 leaves 0.10 m of air between two 0.16 m racks, and keeps 0.07 m of
+# lateral reach margin at the outer slots.
+DELIVERY_SLOT_SPACING = 0.26
 DELIVERY_SLOT_LOCAL_X = (-DELIVERY_SLOT_SPACING, 0.0, DELIVERY_SLOT_SPACING)
 
 
@@ -363,10 +459,12 @@ def delivery_queue():
 #
 # ALL FOUR TABLES, and this is a genuine trade-off rather than an obvious call.
 #
-# AGAINST: a table top at 0.3238 m is BELOW the LIDAR's 0.4466 m scan plane, so
-# the sensor can never return a point on one. Stamping geometry the scan cannot
-# see puts occupied cells in the map that no measurement will ever support,
-# which is the situation aws_hospital_map.py's own docstring warns about.
+# THE ARGUMENT AGAINST HAS SINCE EXPIRED: a table top at 0.3238 m was BELOW the
+# LIDAR's old 0.4466 m scan plane, so the sensor could never return a point on
+# one, and stamping them put occupied cells in the map that no measurement would
+# ever support. Hung under the top plate the scanner cuts these tables at
+# 0.3143 m, 9.5 mm under their tops, so those cells are now measured like any
+# other. It was worth stamping even when it was not, for the reason below.
 #
 # FOR, and decisively: the costmaps have no other obstacle source. Their only
 # observation source is that same LIDAR (see nav2_params.yaml), so a table left

@@ -57,7 +57,9 @@ DESK_FACE = (0.0, DESK_FACE_Y)              # centre of that edge
 #
 # The winner was then re-checked against the world's collision meshes sliced at
 # 5 cm steps from 0.05 m to 1.15 m, because the map is a single horizontal slice
-# at the LIDAR's 0.4466 m and cannot see a low table or the lip of a counter:
+# at the LIDAR's height (0.4466 m then, 0.3143 m since the scanner was inverted
+# under the plate) and one slice cannot see a low table or the lip of a counter.
+# Checking every height is why this survived the sensor moving:
 #
 #     r1 (apex, north)   4.50 m clear
 #     r2 (front left)    1.74 m clear

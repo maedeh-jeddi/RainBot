@@ -3,8 +3,13 @@
 # EVERY TUNING VALUE HERE IS amcl_tugbot.yaml'S, UNCHANGED, AND THAT IS THE
 # POINT. Localization was good in the warehouse run, and nothing physical about
 # the robot differs here -- same chassis, same wheel friction, same IMU, same
-# SICK LIDAR at the same 0.4466 m, same EKF fusing them into the same odom ->
-# base_link. The only things that legitimately change with the world are WHERE
+# SICK LIDAR, same EKF fusing them into the same odom -> base_link. (The
+# scanner has since been hung inverted under the top plate, scanning at
+# 0.3143 m over a 190 deg arc instead of 0.4466 m over 270; AMCL is indifferent
+# to both, because likelihood_field_prob scores scan ENDPOINTS against the map's
+# occupied cells and aws_hospital_map.py regenerates that map by slicing the
+# world at the SAME height the sensor scans. laser_max_range stays 25.0 - that
+# is a range property and the mount did not change it.) The only things that legitimately change with the world are WHERE
 # the robot starts and WHICH map it matches against, so those are the only two
 # things that differ below. Retuning the particle filter for a new building
 # would be changing the one part of the system that was already working.
@@ -91,8 +96,8 @@ amcl:
     # beams each robot's amcl sat at 50% of a core, 150% across the fleet, on a
     # machine whose bring-up was already failing for want of CPU.
     max_beams: 90
-    min_particles: 500
-    max_particles: 2000
+    min_particles: 750 #500
+    max_particles: 2500 #2000
 
     # motion noise (diff drive)
     alpha1: 0.2
@@ -106,6 +111,40 @@ amcl:
     sigma_hit: 0.2
     laser_likelihood_max_dist: 2.0
 
+    # 0.10 / 0.10. TIGHTENED AGAIN, DELIBERATELY, AND THE HISTORY BELOW IS
+    # STILL CORRECT ABOUT WHY THEY WERE RELAXED.
+    #
+    # Nothing below is retracted: the 2.4-2.8 m "driving error" really was a
+    # measurement artifact, and relaxing these really did not cost tracking.
+    # What has changed is what the filter is being fed and what the robot is
+    # doing with the answer.
+    #
+    #   THE SCAN IS WORTH MORE NOW. Hung under the top plate the LIDAR returns
+    #   the other robots and the furniture as well as the walls (see
+    #   lidar_joint in pickplace_arm.urdf.xacro), at 0.5 deg resolution and
+    #   15 Hz instead of 1 deg and 10. More of the incoming information is
+    #   discarded by a filter that runs rarely.
+    #
+    #   THE ROBOT IS FASTER. At 0.20 m and 0.70 m/s the filter ran 3.5 times a
+    #   second; leaving it there while vx_max goes to 0.90 would be a further
+    #   relaxation by stealth, since the DISTANCE threshold is fixed but the
+    #   time between updates shrinks with speed only if the threshold shrinks
+    #   with it. 0.10 m at 0.90 m/s is 9.0 updates a second per robot.
+    #
+    #   THE ANSWER IS USED HARDER. Two robots avoiding each other are avoiding
+    #   a pose estimate, not a robot, so the pose estimate's staleness is now
+    #   part of the collision margin in a way it was not when the only moving
+    #   thing was self.
+    #
+    # WHAT IT COSTS, PLAINLY: about 2.6x the AMCL CPU of the 0.20/0.18 setting,
+    # 27 filter updates a second across the fleet against 10. A run is
+    # (adaptive particle count) x max_beams, and max_beams stays at 90 for the
+    # reason argued above - that is the knob that was expensive, and it is not
+    # being touched. If the fleet starts missing lifecycle deadlines again,
+    # this pair is the first thing to put back, not max_beams.
+    #
+    # --- the original note, unchanged -------------------------------------
+    #
     # 0.18 / 0.20, RELAXED FROM 0.10 / 0.12, BECAUSE THE ERROR THEY WERE
     # TIGHTENED AGAINST DID NOT EXIST.
     #
@@ -131,8 +170,8 @@ amcl:
     # errors in this project were all measured with the robot STATIONARY, where
     # `gz model -p` is trustworthy, and none of them were a function of how
     # often the filter ran.
-    update_min_a: 0.18
-    update_min_d: 0.20
+    update_min_a: 0.10
+    update_min_d: 0.10
     resample_interval: 1
     transform_tolerance: 1.0
     recovery_alpha_slow: 0.0

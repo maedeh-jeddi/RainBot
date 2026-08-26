@@ -429,9 +429,13 @@ class Mission(NavAndPick):
                 # lost counter decide, exactly as it does for angular.z.
                 twist.linear.x = 0.0
                 twist.angular.z = 0.0
-            # publish continuously (~30 Hz for ~0.12 s) so the base keeps moving
-            # smoothly between detections instead of stopping.
-            for _ in range(4):
+            # publish continuously (~30 Hz for ~0.09 s) so the base keeps moving
+            # smoothly between detections instead of stopping. Three bursts
+            # rather than four: the diff drive holds the last command for
+            # cmd_vel_timeout (0.5 s) anyway, so the burst only has to bridge
+            # the gap to the next detection, and every 0.03 s spent here is
+            # 0.03 s the loop is not looking at the rack.
+            for _ in range(3):
                 self.cmd_vel_pub.publish(twist)
                 time.sleep(0.03)
         self._stop_base()

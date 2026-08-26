@@ -267,17 +267,64 @@
   <!-- ==================================================================== -->
 
   <!-- ============ 2D LIDAR (SLAM / Nav2) ============
-       On the front of the top plate. The 270 deg forward arc configured in
-       pickplace_arm.gazebo.xacro excludes a 90 deg wedge pointing straight
-       BACK, which is exactly where the arm stands: the FR3 base is at
-       x=0.07987 and the LIDAR at x=0.40687, so the arm sits 0.327 m directly
-       behind the sensor and subtends only ~+/-15 deg there -comfortably
-       inside the excluded 135..225 deg wedge, so the scan never hits it.
+       HUNG UPSIDE DOWN, FULLY UNDER THE TOP PLATE.
 
-       HEIGHT CHANGED: this sits 0.447 m above the ground, against 0.11 m on
-       the old placeholder chassis. It now scans well above low obstacles,
-       so any ground-level box that SLAM/Nav2 used to see in the scan will no
-       longer appear. -->
+       WHAT WAS WRONG WITH STANDING IT ON THE PLATE. The scan plane sat 0.4467 m
+       above the floor. Every robot in this fleet is 0.3566 m tall at the top of
+       its chassis and 0.3836 m at the top of its plate, so a 2D scan at 0.4467
+       passed clean OVER the body of every other robot in the building. The only
+       part of a neighbour it could return was the FR3 tube standing on that
+       robot's plate. Measured, two robots 3 m apart facing each other:
+
+           standing on the plate, 0.4466 m    8 beams over  3.6 deg
+           hung under it,         0.3143 m   34 beams over 16.6 deg
+
+       Eight beams off a pole is not an obstacle a costmap can act on, which is
+       why three robots sharing a corridor were very nearly invisible to each
+       other. The same 0.4467 m plane also missed every table, trolley, bed
+       frame and chair seat in the hospital, and nav2_params.yaml gives the
+       costmaps this LIDAR and NOTHING ELSE as an obstacle source.
+
+       WHAT THE FLIP BUYS. rpy roll = pi turns the device over so it hangs from
+       the plate's underside instead of standing on its top. That drops the
+       laser centre by 0.1323 m in one move: 0.06296 to get from above the plate
+       to below it, twice, plus the plate's own 0.00639. The scan plane lands at
+       0.3143 m, inside the 0.1301..0.3566 m band the A200 chassis occupies, so
+       a neighbouring robot is now a solid body plus four wheels rather than a
+       stick.
+
+       WHY IT ALSO MOVES BACK 3.5 mm, AND WHY THAT IS THE INTERESTING NUMBER.
+       The device has to end up ENTIRELY under the plate, which is a window with
+       a wall at each end, both measured rather than assumed:
+
+         FRONT WALL  the plate's front edge is at x=0.4462 and the housing
+                     reaches 0.02903 ahead of the laser centre, so the laser
+                     centre cannot go past x=0.41717 without the scanner
+                     overhanging the lip into open air.
+
+         BACK WALL   the chassis is in the way. The housing hangs through
+                     base_link z 0.15914..0.245, and the A200's body TAPERS
+                     through that band: sliced off base_link.dae and
+                     top_chassis.dae it reaches x=0.3516 at z=0.159 and only
+                     0.2791 at z=0.220. The rear boss sits 0.04729 behind the
+                     laser centre, so the laser centre cannot come back past
+                     x=0.39889 without burying the boss in the chassis.
+
+       x=0.4100 sits in the middle of that 18 mm window: the housing spans
+       0.36271..0.43903, which is 7.2 mm inboard of the plate's lip and 11.1 mm
+       clear of the chassis. The old mount was at 0.40687 with the device
+       standing on top, so this is 3.5 mm further back and 0.1323 m lower.
+
+       THE ARM IS NO LONGER PART OF THIS. The old 90 deg rear wedge existed
+       because the FR3 stands 0.327 m behind the sensor at scan height. Below
+       the plate there is no arm in the plane at all, only the chassis and the
+       front wheels, and the arc in pickplace_arm.gazebo.xacro is cut to clear
+       those instead. See the note there for the measured bearings.
+
+       THE MAP MUST BE REGENERATED WITH THIS. aws_hospital_map.py builds the
+       Nav2 map by slicing the world at Z_LIDAR, so that constant and this joint
+       are one number in two places; a map sliced at a height the sensor does
+       not scan is a localisation failure, not a cosmetic one. -->
   <!-- Modelled as a SICK TiM5xx (TiM571): a real 270 deg, single-plane scanner
        whose datasheet geometry is what the sensor config above already
        describes. Mesh vendored from sick_scan_xd into meshes/sensors/.
@@ -322,27 +369,43 @@
   <joint name="lidar_joint" type="fixed">
     <parent link="top_plate_front_mount"/>
     <child link="lidar_link"/>
-    <!-- Stand the real device ON the plate, fully INBOARD of its front edge.
-         Two corrections, both against the measured mesh envelope above:
+    <!-- Hang the device UNDER the plate, inverted and wholly inboard. All three
+         numbers come from the measured mesh envelope above and the chassis
+         slices quoted in the block before this one.
 
-         z = +0.06296 (not SICK's 0.05595). lidar_link IS the laser centre and
-         the mesh's base plate is 0.06296 below it, so this puts the housing's
-         floor on the plate's upper surface (0.25135 in base_link) to within
-         0.1 mm. The old value buried the bottom 7 mm of the housing in the
-         plate. Scan plane: 0.4467 m above the floor, up from 0.4396.
+         rpy roll = pi. The device is turned over, so its base plate (0.06296
+         BELOW the laser centre in the mesh) now sits 0.06296 ABOVE it, bedded
+         against the plate's underside, and the optical head points down.
+         Rolling about X rather than Y is deliberate: it leaves +x forward, so
+         the scan arc stays symmetric about the bow and every bearing in the
+         sensor config keeps its meaning. Nothing downstream needs to know the
+         sensor is inverted. The LaserScan is published in lidar_link,
+         robot_state_publisher carries the roll in TF, and AMCL, the costmaps
+         and RViz all transform through it (nav2_amcl transforms angle_min and
+         the increment into the base frame precisely for this case).
 
-         x = -0.038. top_plate_front_mount sits at top_plate_link x=0.44487 but
-         the plate's front EDGE is at 0.4462 - only 1.3 mm further forward -
-         while the mesh reaches 0.02903 ahead of the laser centre. Mounted with
-         no x offset, 27.7 mm of the scanner hung off the front of the plate in
-         mid-air. Pulling it back 38 mm puts its front face at 0.4359, i.e.
-         10.3 mm inboard of the edge, with the whole footprint on the plate.
+         z = -0.06935 = -(0.00639 + 0.06296). top_plate_front_mount sits on the
+         plate's UPPER surface; 0.00639 down reaches the underside at base_link
+         0.245, and the inverted device beds flat against it, putting the laser
+         centre 0.06296 lower still at base_link 0.18204 - 0.3143 m above the
+         floor.
 
-         Neither change costs anything downstream: warehouse walls span the
-         full height either way, the carried box still rides 0.17 m clear above
-         the scan plane, and the arm stays deep inside the excluded rear wedge
-         (see above). -->
-    <origin xyz="-0.038 0 0.06296" rpy="0 0 0"/>
+         x = -0.03487, i.e. base_link 0.4100. This is the "fully under the
+         plate" constraint and it is a two sided one: the housing must not
+         overhang the plate's lip at 0.4462 (laser centre <= 0.41717) and its
+         rear boss must not enter the tapering chassis, which reaches 0.3516 at
+         the housing's lowest point (laser centre >= 0.39889). 0.4100 is
+         centred in that window, leaving 7.2 mm to the lip and 11.1 mm to the
+         chassis. It is also inside the chassis collision box's own 0.4937, so
+         the robot's physical envelope is unchanged.
+
+         WHAT THIS COSTS. The carried payload has to clear a plane 0.1323 m
+         LOWER, which is slack rather than cost - carry_height() in
+         pick_and_place.py re-derives it from LIDAR_SCAN_Z. What it does cost is
+         the rear of the old 270 deg arc, which at this height is the robot's
+         own wheels and chassis; that trade is argued and measured in
+         pickplace_arm.gazebo.xacro, where the arc is set. -->
+    <origin xyz="-0.03487 0 -0.06935" rpy="${PI} 0 0"/>
   </joint>
 
   <!-- IMU: its yaw is fused with the wheel odometry (robot_localization EKF)

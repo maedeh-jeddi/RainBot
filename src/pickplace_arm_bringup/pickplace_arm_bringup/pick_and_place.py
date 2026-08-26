@@ -28,6 +28,7 @@ points. See the comments on each for what specifically needs redoing.
 import math
 import time
 import threading
+from contextlib import contextmanager
 from threading import Lock
 
 import numpy as np
@@ -108,6 +109,67 @@ APPROACH_Z = GRASP_Z + 0.15           # pre-grasp / lift height
 # the 0.06 box on both sides without sitting on the hard stop.
 GRIP_OPEN = 0.038
 GRIP_CLOSED = 0.0
+# How long the jaws are given to travel, as the trajectory point's own duration.
+# The Franka finger travels 0.038 m end to end, so 0.4 s is 0.095 m/s against
+# the 0.2 m/s limit in joint_limits.yaml - half speed, not a rush. It replaces a
+# 1 s point that was then followed by 1.2 s of unconditional sleeping; see
+# _wait_gripper for how the settling time is measured instead of guessed.
+GRIP_MOVE_TIME = 0.4
+
+# --- the fixed waits that are left, and what each one is actually for --------
+#
+# ARM_SETTLE: after wait_until_executed() has already returned, so the
+# trajectory is finished by then. This covers the joint_trajectory_controller's
+# goal_time tolerance and lets the chassis stop rocking on its tyres before a
+# detection or the next plan reads TF. It was 0.5 s on each of the ten-odd arm
+# moves an errand makes, i.e. five seconds an errand spent watching a stationary
+# arm. It is NOT zero, because the settle is the thing that protects accuracy
+# when the moves either side of it are faster.
+#
+# SCENE_SYNC: after add/attach/detach/remove_collision_object. pymoveit2 sends
+# those on a TOPIC with no acknowledgement, so this is the window move_group has
+# to receive and apply the change before the next plan is built against it.
+#
+# THIS WAS TRIED AT 0.25 AND IT BROKE A PICK. Measured on a full run, r1 at the
+# red table:
+#
+#     [claw] box held between the jaws
+#     [arm] -> (0.78,-0.00,0.42) cartesian break contact
+#     Action 'execute_trajectory' was unsuccessful: STATUS_ABORTED.   <- 59 ms
+#     [arm] motion failed: break contact
+#
+# which is exactly the failure grab_below's own comment describes: the payload
+# is already in the scene as a WORLD object and the jaws have closed on it, so
+# until move_group has APPLIED the attach (with FINGER_LINKS as touch_links) the
+# start state is in collision and the next goal is refused without planning.
+# 0.25 s was not enough for the publish plus the planning scene monitor update
+# under fleet load. The consequence is not cosmetic: break contact is what lifts
+# the rack clear before the weld, and skipping it welds a payload that is still
+# resting on the table.
+#
+# So this is back to the 0.5 s it was, and the split below is restored too:
+# adding and ATTACHING have to be seen before the next plan, while removing and
+# detaching only ever make the scene emptier, which no plan can trip over.
+ARM_SETTLE = 0.15
+SCENE_SYNC = 0.5
+SCENE_SYNC_RELEASE = 0.3
+
+# Arm scaling for the moves where PRECISION, not travel time, is the point:
+# the descent onto a payload and the descent into a delivery slot. Both end
+# with the fingertips at a pose derived from a camera or a TF reading, both are
+# short, and both are where a few millimetres decide whether the jaws close on
+# the payload or shove it. Roughly half the transit scaling; see slow_arm().
+PRECISE_VEL, PRECISE_ACC = 0.30, 0.25
+# Scaling for the one move that is still carried by FRICTION alone - the
+# break-contact hop between the jaws closing and the weld being made. This is
+# the value that was measured to keep a rack in the jaws, so it is kept exactly.
+FRICTION_VEL, FRICTION_ACC = 0.20, 0.20
+
+
+def _duration(seconds):
+    """builtin_interfaces/Duration from a float, for trajectory points."""
+    return Duration(sec=int(seconds),
+                    nanosec=int(round((seconds - int(seconds)) * 1e9)))
 # Where the jaws are parked once the box is WELDED on (see attach_box). 0.0 is
 # what the grasp is commanded to, and it has to stay 0.0: the empty-grasp check
 # works precisely because closing on air reads ~0.000 while closing on a box is
@@ -147,11 +209,15 @@ MAX_GRASP_ATTEMPTS = 3
 # mobile base drives to the delivery point.
 #
 # Re-derived. Two clearances drive it, both re-checked for this robot:
-#   * LIDAR: modelled as a real SICK TiM5xx standing on the top plate, its
-#     laser centre is 0.4466 m above the floor. The carried box rides at
-#     0.65 m, so its underside (0.62) clears the scan plane by ~0.17 m and
-#     cannot be self-detected as an obstacle dead ahead (the failure the old
-#     0.18->0.30 tuning chain was chasing).
+#   * LIDAR: modelled as a real SICK TiM5xx, now hung INVERTED under the top
+#     plate, so its laser centre is 0.3143 m above the floor (it was 0.4466
+#     while the device stood on top - see lidar_joint in
+#     pickplace_arm.urdf.xacro). The carried box rides at 0.65 m, so its
+#     underside (0.62) clears the scan plane by 0.31 m, up from ~0.17. The
+#     lowered scanner makes this clearance easier, never harder: the plane to
+#     stay above dropped 0.13 m, and the whole top plate is above it now, so
+#     anything carried over the plate is out of the scan by construction (the
+#     failure the old 0.18->0.30 tuning chain was chasing).
 #   * FRONT CAMERA: at base_link (0.425, 0.091). The box at x=0.50 is now
 #     AHEAD of the lens rather than behind it, but it still cannot occlude the
 #     column search, for a stronger reason than before: it rides 0.40 m above
@@ -163,7 +229,9 @@ MAX_GRASP_ATTEMPTS = 3
 CARRY_POSITION = (0.50, 0.00, GROUND_Z + 0.65)
 # The two numbers the height above was derived from, named so carry_height()
 # can re-derive it for a payload that is not a box.
-LIDAR_SCAN_Z = 0.4466            # laser centre above the floor
+# Keep in step with lidar_joint (pickplace_arm.urdf.xacro) and with
+# aws_hospital_map.Z_LIDAR, which slices the Nav2 map at this same height.
+LIDAR_SCAN_Z = 0.3143            # laser centre above the floor
 CARRY_LIDAR_CLEARANCE = 0.17     # payload underside to scan plane
 
 
@@ -171,12 +239,18 @@ def carry_height(payload_grip_height):
     """Fingertip height above the floor that keeps the payload out of the scan.
 
     THE 0.65 ABOVE IS CORRECT FOR A BOX AND WRONG FOR ANYTHING HELD HIGHER UP
-    ITS OWN BODY. It was derived as scan plane + clearance + half a box:
-    0.4466 + 0.17 + 0.03. A box is grasped through its middle, so its underside
-    hangs 0.03 m below the fingertips. A sample rack is grasped by a block on a
-    gantry 0.17 m above its own tray, so at the same fingertip height its
-    underside would ride 0.14 m LOWER -- 0.033 m above the scan plane instead of
-    0.17 m.
+    ITS OWN BODY. It was derived as scan plane + clearance + half a box, back
+    when the scan plane was 0.4466: 0.4466 + 0.17 + 0.03. A box is grasped
+    through its middle, so its underside hangs 0.03 m below the fingertips. A
+    sample rack is grasped by a block on a gantry 0.17 m above its own tray, so
+    at the same fingertip height its underside would ride 0.14 m LOWER -- 0.033 m
+    above the scan plane instead of 0.17 m.
+
+    LOWERING THE SCANNER TO 0.3143 RELAXES THIS, IT DOES NOT INVALIDATE IT. The
+    formula is the source of truth and the numbers follow it: a rack now needs
+    0.3143 + 0.17 + 0.17 = 0.654 m rather than 0.787, so it is carried 0.13 m
+    lower, closer to the middle of the arm's envelope and with less of a
+    pendulum. The 0.65 floor keeps every box-carrying mission exactly as tuned.
 
     That is not a near miss, it is a hit. Carrying the rack, the forward arc of
     the LIDAR came back with all 31 beams under 0.6 m, median 0.13 m, minimum
@@ -371,14 +445,42 @@ class PickAndPlace(Node):
         self.arm = MoveIt2(
             node=self, joint_names=ARM_JOINTS, base_link_name='base_link',
             end_effector_name=GRASP_LINK, group_name='arm', callback_group=cbg)
-        # Kept slow (0.20, was 0.30): the box is held by friction, and the
-        # slip that occasionally dropped it happened DYNAMICALLY during the
-        # lift/carry, not statically -- a gentler carry keeps the inertial
-        # load on the friction grip below the point where the box breaks free
-        # (especially in a heavier world where the physics step is coarser
-        # under load). Pairs with the raised finger/box friction.
-        self.arm.max_velocity = 0.20
-        self.arm.max_acceleration = 0.20
+        # 0.55 / 0.45 FOR TRANSIT, UP FROM 0.20 / 0.20, AND THE OLD VALUE WAS
+        # PAYING FOR A PROBLEM THAT NO LONGER EXISTS ON MOST OF THE PATH.
+        #
+        # 0.20 was chosen when the payload rode on FRICTION for the whole lift
+        # and carry, and the slip that dropped it was dynamic. It is not held by
+        # friction any more: grab_below welds it with a DetachableJoint the
+        # moment it is clear of the surface, so from that instant it is part of
+        # the robot's own rigid body and cannot slip at any speed.
+        #
+        # SPEED IS NOT TRADED AGAINST ACCURACY HERE, IT IS SEPARATED FROM IT.
+        # Every MoveIt trajectory ends at zero velocity at a commanded pose, so
+        # scaling changes how long the arm takes to get there and not where it
+        # stops. What scaling CAN cost is overshoot and settling, and that only
+        # matters on the two or three moves whose endpoint is millimetre
+        # critical. Those keep their own slower scaling through slow_arm():
+        #
+        #     descend onto the payload      PRECISE_VEL   grab_below
+        #     lower into a delivery slot    PRECISE_VEL   place_in_slot
+        #     break contact before the weld FRICTION_VEL  grab_below
+        #
+        # Everything else - the reach over a slot, the lift, the 0.35 m carry
+        # swing, the retreat and every return to HOME_CONFIG - is free space
+        # travel between poses nothing measures, and was running at a fifth of
+        # the joint limits for no reason that survives the weld. An errand makes
+        # about ten of those, which is the single largest saving in this file.
+        #
+        # 0.70 / 0.55, RAISED AGAIN FROM 0.55 / 0.45 after measuring the pick.
+        # The grab sequence at 0.55 was 10.4 s of which the carry hop alone was
+        # 3.0 s and the lift 1.4 s -- both free-space moves with a welded
+        # payload, i.e. exactly the ones this scaling is for.
+        #
+        # NOT 1.0. These are fractions of the FR3's real datasheet velocities
+        # (2.62 rad/s on joints 1-4); run flat out and the arm whips the chassis
+        # on its tyres, which costs more in settling than it saves in travel.
+        self.arm.max_velocity = 0.70
+        self.arm.max_acceleration = 0.55
 
         # Scan pose used by run() to locate the box before grasping. Kept as
         # instance attributes so subclasses (e.g. the mobile search-and-pick)
@@ -419,7 +521,36 @@ class PickAndPlace(Node):
             JointState, 'joint_states', self._joint_state_cb, 10,
             callback_group=cbg)
 
-        self.tf_buffer = tf2_ros.Buffer()
+        # 30 s OF HISTORY, NOT THE DEFAULT 10, AND THAT DEFAULT COST A RACK.
+        #
+        # A lookup at rclpy.time.Time() asks tf2 for the LATEST COMMON time
+        # across the chain, and the chain here is map -> odom (AMCL) then
+        # odom -> base_link (the EKF). Those two run at very different rates,
+        # and under a three-robot load AMCL is the one that starves: its last
+        # map -> odom can be fifteen seconds behind the EKF's newest
+        # odom -> base_link. The common time is then AMCL's -- correctly -- but
+        # a 10 s buffer has already discarded the EKF entry for it, so the
+        # lookup that should have succeeded throws instead:
+        #
+        #   Lookup would require extrapolation into the past. Requested time
+        #   301.20 but the earliest data is at time 308.02
+        #
+        # Measured on the 16:54 run, r3: four such failures, the worst 6.82 s
+        # past the start of the buffer. They broke _base_xy_in_map, which is
+        # what _drive_to_delivery_standoff verifies its arrival with, so every
+        # arrival check returned None, all three attempts "failed", and r3 gave
+        # up on a delivery table it was standing in front of -- then had no pose
+        # to retreat from either. Nothing was wrong with the robot or the
+        # transform; the answer was sitting 6.82 s outside the window.
+        #
+        # 30 s covers the worst measured lag three times over. The cost is
+        # memory for a few hundred more transform samples per chain.
+        #
+        # THIS DOES NOT MAKE A STALE POSE FRESH, and it is not meant to. Every
+        # caller of these lookups reads the pose with the base STOPPED -- at the
+        # standoff, at the holding ring -- so a pose from AMCL's last update is
+        # the best answer available, and returning it beats returning nothing.
+        self.tf_buffer = tf2_ros.Buffer(cache_time=RclDuration(seconds=30.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Rigid grasp (see the DetachableJoint plugins in
@@ -550,7 +681,7 @@ class PickAndPlace(Node):
             ok = self._move_pose_direct(x, y, z, quat_xyzw, label, strict)
         if not ok:
             self.get_logger().warn(f'[arm] motion failed: {label}')
-        time.sleep(0.5)
+        time.sleep(ARM_SETTLE)
         return ok
 
     def _move_pose_direct(self, x, y, z, quat_xyzw, label, strict=False):
@@ -612,6 +743,78 @@ class PickAndPlace(Node):
             config[i] = best
         return config
 
+    @contextmanager
+    def slow_arm(self, velocity=FRICTION_VEL, acceleration=FRICTION_ACC):
+        """Run one arm move at reduced scaling, then restore whatever was set.
+
+        The constructor raises the arm to 0.55/0.45 for TRANSIT because the
+        payload is welded for almost the whole of a pick. This is how the
+        exceptions keep their own numbers: the two millimetre-critical descents
+        at PRECISE_VEL, and the one still-friction-only hop at FRICTION_VEL.
+        Scoped rather than set-and-forget so that a failure or an early return
+        inside the block cannot leave the whole arm crawling for the rest of the
+        mission.
+        """
+        prev_v, prev_a = self.arm.max_velocity, self.arm.max_acceleration
+        self.arm.max_velocity = velocity
+        self.arm.max_acceleration = acceleration
+        try:
+            yield
+        finally:
+            self.arm.max_velocity = prev_v
+            self.arm.max_acceleration = prev_a
+
+    def _wait_gripper(self, target, timeout_sec=2.0, reach_tol=0.002):
+        """Block until the jaws have finished moving, or the timeout.
+
+        WHY THIS IS NOT A SLEEP. It used to be: three publishes 0.4 s apart and
+        then a flat 1.0 s, i.e. 2.2 s of dead time on EVERY gripper command, and
+        an errand issues five of them. That number was never derived from
+        anything the jaws do - it was a guess wide enough to cover the worst
+        case - so it paid the worst case every single time. Watching the joint
+        instead is both faster and STRICTER: the old sleep would have returned
+        happily from a gripper that never moved at all.
+
+        TWO WAYS TO BE DONE, and both are needed. Opening ends with the finger
+        AT its target, which `reach_tol` catches. Closing on a payload does not:
+        GRIP_CLOSED is 0.0 and the box stops the jaws at ~0.030, which is the
+        whole basis of grasp_is_holding()'s empty-grasp check, so the other exit
+        is "the finger has stopped moving".
+
+        THE POLL INTERVAL IS 0.1 s BECAUSE /joint_states IS 25 Hz, and that is
+        not a rounding choice. Sampling a 40 ms stream every 40 ms reads the
+        SAME message twice about as often as not, and two reads of one message
+        differ by exactly zero - which this loop would score as "stopped" and
+        return on, while the jaws were still travelling. 0.1 s is 2.5 state
+        periods, so consecutive samples are always different messages, and three
+        of them within 0.5 mm is 0.3 s of stillness on a joint whose entire
+        travel is 0.038 m.
+
+        The initial wait is the commanded trajectory duration: before that has
+        elapsed the finger is legitimately stationary at its start position, and
+        polling into that window would read "stopped" and return immediately.
+        """
+        time.sleep(GRIP_MOVE_TIME + 0.05)
+        deadline = time.time() + timeout_sec
+        prev, stable = None, 0
+        while time.time() < deadline:
+            pos = self._joint_pos.get(GRIPPER_JOINTS[0])
+            if pos is not None:
+                if abs(pos - target) <= reach_tol:
+                    return True
+                if prev is not None and abs(pos - prev) <= 0.0005:
+                    stable += 1
+                    if stable >= 3:
+                        return True
+                else:
+                    stable = 0
+                prev = pos
+            time.sleep(0.1)
+        self.get_logger().warn(
+            f'[gripper] jaws never settled at {target:.3f} within '
+            f'{timeout_sec:.1f}s (last {prev})')
+        return False
+
     def move_config(self, config, label=''):
         """Move to an explicit joint configuration (a direct joint-space plan).
         Roll-joint targets are normalized to the nearest equivalent so the arm
@@ -622,7 +825,7 @@ class PickAndPlace(Node):
         ok = self.arm.wait_until_executed()
         if not ok:
             self.get_logger().warn(f'[arm] motion failed: config {label}')
-        time.sleep(0.5)
+        time.sleep(ARM_SETTLE)
         return ok
 
     def gripper(self, pos, label='', release=None):
@@ -646,12 +849,18 @@ class PickAndPlace(Node):
         # gripper had two, so this is sized off GRIPPER_JOINTS rather than
         # hardcoded.
         pt.positions = [float(pos)] * len(GRIPPER_JOINTS)
-        pt.time_from_start = Duration(sec=1)
+        pt.time_from_start = _duration(GRIP_MOVE_TIME)
         m.points = [pt]
+        # THREE PUBLISHES 50 ms APART, NOT 400. The repeat is discovery
+        # insurance -- this is a plain publisher with no acknowledgement, so a
+        # sample sent before the controller's subscription has matched is simply
+        # lost -- and matching does not become more likely by waiting 0.4 s
+        # between copies rather than 0.05. The time the jaws actually need is
+        # waited for afterwards, against the joint state rather than the clock.
         for _ in range(3):
             self.gripper_pub.publish(m)
-            time.sleep(0.4)
-        time.sleep(1.0)
+            time.sleep(0.05)
+        self._wait_gripper(float(pos))
         # Release the weld AFTER the jaws have finished opening, never before.
         # Opening is the one and only release point, so hooking it here covers
         # every call site (place, release-after-failed-carry, the open before a
@@ -684,7 +893,7 @@ class PickAndPlace(Node):
             id=BOX_ID, size=(BOX_SIZE, BOX_SIZE, BOX_SIZE),
             position=(xy[0], xy[1], z_center), quat_xyzw=(0.0, 0.0, 0.0, 1.0),
             frame_id='base_link')
-        time.sleep(0.5)
+        time.sleep(SCENE_SYNC)
 
     # --- perception ------------------------------------------------------------
     def detect_box_pose(self, timeout_sec=5.0, debug_save=False, color='blue'):
@@ -842,8 +1051,9 @@ class PickAndPlace(Node):
         # descend onto the box (remove it from the scene so the jaws may
         # surround it without a false collision), then close.
         self.arm.remove_collision_object(BOX_ID)
-        time.sleep(0.3)
-        self.move_pose(bx, by, GRASP_Z, 0.0, cartesian=True, label='descend')
+        time.sleep(SCENE_SYNC_RELEASE)
+        with self.slow_arm(PRECISE_VEL, PRECISE_ACC):
+            self.move_pose(bx, by, GRASP_Z, 0.0, cartesian=True, label='descend')
         self.gripper(GRIP_CLOSED, 'grasp')
 
         if not self.grasp_is_holding():
@@ -871,7 +1081,11 @@ class PickAndPlace(Node):
             self.gripper(GRIP_OPEN, 'open')
             self.move_pose(sx, sy, sz, label='scan',
                            quat_xyzw=scan_quat(self.scan_pitch))
-            time.sleep(0.5)
+            # move_pose already waited ARM_SETTLE; this is the extra margin the
+            # WRIST camera needs, whose 5 Hz frames are the slowest thing in the
+            # loop -- detect_box_pose flushes the cache and waits for a fresh
+            # one, so one frame period is the honest number.
+            time.sleep(0.2)
             detection = self.detect_box_pose()
             if detection is None:
                 log.warn(f'[pick] no box detected at scan pose (attempt {attempt})')
@@ -891,7 +1105,7 @@ class PickAndPlace(Node):
             self.add_box(box_xy, z_center=GROUND_Z + BOX_SIZE / 2.0)
             self.arm.attach_collision_object(
                 id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
-            time.sleep(0.5)
+            time.sleep(SCENE_SYNC)
 
             # 4) lift straight up (cartesian), then tuck into the compact carry
             #    pose. The carry hop is a larger reposition, so use a slow joint
@@ -978,8 +1192,14 @@ class PickAndPlace(Node):
                 f'payload centre, i.e. on its near edge. Fix the approach '
                 f'distance, not this cap.')
         by = det[1]
-        self.move_pose(bx, by, grasp_z, 0.0, cartesian=True,
-                       label='claw descend', quat_xyzw=zdown_quat(0.0))
+        # PRECISION, NOT TRANSIT. This descent ends with the fingertips
+        # straddling a 0.06 m grip block whose position came from one camera
+        # reading; it is the move where a few millimetres decide between a grasp
+        # and a shove. It keeps a slower scaling than the free-space moves
+        # around it -- which is what lets those be fast.
+        with self.slow_arm(PRECISE_VEL, PRECISE_ACC):
+            self.move_pose(bx, by, grasp_z, 0.0, cartesian=True,
+                           label='claw descend', quat_xyzw=zdown_quat(0.0))
         self.gripper(GRIP_CLOSED, 'grasp')
         if not self.grasp_is_holding():
             log.warn('[claw] jaws closed on air -- lifting to retry')
@@ -1022,13 +1242,38 @@ class PickAndPlace(Node):
         self.add_box((bx, by), z_center=grasp_z)
         self.arm.attach_collision_object(
             id=BOX_ID, link_name=GRASP_LINK, touch_links=FINGER_LINKS)
-        time.sleep(0.5)
+        time.sleep(SCENE_SYNC)
         # Now break contact for real. WELD_CLEARANCE is deliberately small:
         # long enough to lift the payload off the surface, short enough that a
         # friction-only hold is not being asked to survive a real carry -- which
         # it cannot.
-        self.move_pose(bx, by, grasp_z + WELD_CLEARANCE, 0.0, cartesian=True,
-                       label='break contact', quat_xyzw=zdown_quat(0.0))
+        # THE ONE MOVE STILL CARRIED BY FRICTION, so it is the one move that
+        # keeps the original 0.20 scaling exactly. Everything before it is
+        # stationary and everything after it is welded; see slow_arm() and the
+        # note on self.arm.max_velocity in __init__.
+        #
+        # RETRIED ONCE, BECAUSE IT INTERMITTENTLY ABORTS AND THE COST IS NOT
+        # COSMETIC. Observed on three robots in one run:
+        #
+        #     [arm] -> (0.77,0.00,0.42) cartesian break contact
+        #     Action 'execute_trajectory' was unsuccessful: STATUS_ABORTED.
+        #     [arm] motion failed: break contact
+        #
+        # The pick then carries on and succeeds, so it reads as harmless -- but
+        # it is this move that lifts the payload clear BEFORE the weld, and
+        # welding a rack that is still resting on the table is what the note
+        # above says pitches the chassis onto its front wheels. A single retry
+        # costs a fraction of a second on the rare failure and nothing at all
+        # on the normal path.
+        with self.slow_arm(FRICTION_VEL, FRICTION_ACC):
+            if not self.move_pose(bx, by, grasp_z + WELD_CLEARANCE, 0.0,
+                                  cartesian=True, label='break contact',
+                                  quat_xyzw=zdown_quat(0.0)):
+                log.warn('[claw] break contact failed -- retrying once before '
+                         'the weld')
+                self.move_pose(bx, by, grasp_z + WELD_CLEARANCE, 0.0,
+                               cartesian=True, label='break contact (retry)',
+                               quat_xyzw=zdown_quat(0.0))
 
         # THE ONLY HONEST LOOK AT THE FINGERS IS BEFORE THE WELD.
         #
@@ -1130,13 +1375,18 @@ class PickAndPlace(Node):
         # for the carry hop), then lower straight down (cartesian).
         self.move_pose(px, py, APPROACH_Z, place_yaw, cartesian=False, label='to place')
         self.move_pose(px, py, GRASP_Z, place_yaw, cartesian=True, label='place-down')
+        # Detach AND remove before the retreat -- see place_in_slot in
+        # mission_delivery.py for the measured abort this ordering prevents: a
+        # detached-but-not-removed object stays in the scene exactly where the
+        # fingertips are, so the retreat is planned from a start state in
+        # collision and is refused without planning.
         self.arm.detach_collision_object(BOX_ID)
-        time.sleep(0.3)
+        self.arm.remove_collision_object(BOX_ID)
+        time.sleep(SCENE_SYNC_RELEASE)
         self.gripper(GRIP_OPEN, 'release')
 
         # retreat and go home
         self.move_pose(px, py, APPROACH_Z, place_yaw, cartesian=True, label='retreat')
-        self.arm.remove_collision_object(BOX_ID)
         self.move_config(HOME_CONFIG, 'home')
         log.info('=== PLACE DOWN: DONE ===')
 

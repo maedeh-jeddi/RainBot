@@ -75,19 +75,38 @@ SPIN_STEPS_PER_REV = int(round(2 * math.pi / SPIN_STEP_RAD)) + 1
 BLIND_FORWARD_LINEAR = 0.2      # m/s, when a full spin finds nothing
 BLIND_FORWARD_SEC = 2.0
 
-APPROACH_LINEAR_GAIN = 0.5
-# 0.45 m/s, up from 0.35. THIS CAP ONLY EVER BINDS FAR FROM THE BOX, so raising
-# it does not make the delicate part of the approach any faster or any rougher.
-# The command is min(MAX, GAIN * distance) with GAIN 0.5, so the cap is only
-# reached beyond 2 x MAX / 1 = 0.90 m; inside that the gain term is smaller and
-# is what actually governs. In other words this speeds up the run-in from the
-# stand-off and leaves the last 0.9 m -- the part that has to end at
-# STOP_DISTANCE without overshooting -- controlled by exactly the same law it
-# was before.
-APPROACH_LINEAR_MAX = 0.45      # m/s
-APPROACH_LINEAR_MIN = 0.08      # m/s floor so it keeps closing on the box
+# 1.0, UP FROM 0.5, AND THIS IS WHAT MAKES THE PICK SLOW.
+#
+# The claw approach is a proportional drive: min(MAX, max(MIN, GAIN * distance)).
+# The GAIN term is what governs over almost the whole run-in, so it, not the
+# cap, is the number that decides how long the robot spends closing the last
+# half metre. Measured on a full run, r1 at the red table:
+#
+#     Nav2 reached the collection standoff   t+0.0 s
+#     [claw] box within reach                t+9.1 s
+#
+# 9.1 s to cover 0.55 m, i.e. 0.06 m/s average, while the command at the start
+# of that run-in was 0.275 m/s. The gap is the servo loop itself: each iteration
+# is a fresh detection plus a short burst of cmd_vel, so the base is only under
+# command for part of the cycle. Doubling the gain and lifting the floor
+# roughly halves the wall time without touching the law that ends the approach.
+APPROACH_LINEAR_GAIN = 1.0
+# 0.60 m/s. THIS CAP ONLY EVER BINDS FAR FROM THE BOX, so raising it does not
+# make the delicate part of the approach any faster or any rougher: with GAIN
+# 1.0 the cap is only reached beyond 0.60 m, and inside that the gain term is
+# smaller and is what actually governs.
+APPROACH_LINEAR_MAX = 0.60      # m/s
+# 0.12 m/s floor, up from 0.08, so it keeps closing on the box. THE FLOOR IS
+# WHAT SETS OVERSHOOT, and that is bounded by the table: the servo stops when
+# the rack reads CLAW_STOP_X, which leaves the bumper 0.136 m from the
+# collection table's solid face, and one loop iteration at 0.12 m/s is about
+# 0.036 m. That leaves 0.10 m even if the stop lands a whole cycle late.
+APPROACH_LINEAR_MIN = 0.12
 APPROACH_ANGULAR_GAIN = 1.4
-APPROACH_ANGULAR_MAX = 0.7      # rad/s
+# 0.9 rad/s, up from 0.7. Same argument as the linear cap: with GAIN 1.4 this
+# only binds beyond 0.64 rad of bearing error, which is the initial re-aim
+# rather than the final centring.
+APPROACH_ANGULAR_MAX = 0.9      # rad/s
 STOP_DISTANCE = 0.46            # m; must stay >= the search pose's ~0.45m
                                  # detection floor (stopping closer makes the
                                  # servo lose the box and wander). Box lands

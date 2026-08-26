@@ -34,8 +34,10 @@
     # cpu on this machine is kernel time.
     #
     # Halving the rate halves that traffic. 25 Hz is still ahead of every
-    # consumer: Nav2's controller runs at 20 Hz, the base tops out at 0.55 m/s
-    # (2 cm per cycle), and the arm moves slowly through pick and place.
+    # consumer: Nav2's controller runs at 20 Hz and the base now tops out at
+    # 1.0 m/s, i.e. 4 cm per controller cycle. That is the number to watch if
+    # the base is ever asked to go faster again - at some point the wheel
+    # command becomes the coarse thing rather than the TF traffic.
     update_rate: 25  # Hz
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -155,15 +157,32 @@
     enable_odom_tf: false
     cmd_vel_timeout: 0.5
     use_stamped_vel: false
+    # THE HARDWARE CEILING FOR THE WHOLE STACK, and it was set below the real
+    # robot's. Clearpath's own A200 hardware interface declares max_speed 1.0
+    # and max_accel 5.0 (the non-sim branch of a200.urdf.xacro's ros2_control
+    # block, which this sim twin shadows), so 0.8 / 1.5 was a self-imposed cap
+    # rather than the base's. Nav2 was then asked to stay under THAT, which is
+    # how every drive in a 29-40 m errand ended up at 0.70 m/s.
+    #
+    # The three limiters have to stay ordered - MPPI 0.90/2.2 asks, the velocity
+    # smoother 0.90/2.4 passes on, this 1.00/2.5 executes - so that no layer
+    # silently clips a command the layer above planned. See the note in
+    # nav2_params.yaml's velocity_smoother block.
+    #
+    # 2.5 m/s^2 is a quarter of what traction allows: the wheels carry mu 1.0 in
+    # pickplace_arm.gazebo.xacro, i.e. roughly 9.8 m/s^2 before slip. The real
+    # constraint is not grip, it is that a skid-steer which slips corrupts the
+    # wheel odometry the EKF is fusing - which is what wheel_separation_multiplier
+    # below exists to correct - so this stays well inside the limit.
     linear:
       x:
         has_velocity_limits: true
-        max_velocity: 0.8
+        max_velocity: 1.0
         has_acceleration_limits: true
-        max_acceleration: 1.5
+        max_acceleration: 2.5
     angular:
       z:
         has_velocity_limits: true
-        max_velocity: 2.2
+        max_velocity: 2.5
         has_acceleration_limits: true
-        max_acceleration: 4.0
+        max_acceleration: 6.0

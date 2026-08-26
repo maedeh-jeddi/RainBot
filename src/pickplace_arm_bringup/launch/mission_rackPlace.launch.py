@@ -47,8 +47,8 @@ def generate_launch_description():
     THE PROPS ARE SPAWNED, NOT PUT IN THE WORLD FILE, and they are deliberately
     absent from the map. The racks are carried away, so a map obstacle where one
     used to be is worse than none at all; the table (0.30 m) and two of the
-    three columns sit entirely BELOW the 0.4466 m scan plane, so a LIDAR could
-    not return them anyway and stamping them would bias AMCL rather than help
+    three columns sit entirely BELOW even the lowered 0.3143 m scan plane, so a
+    LIDAR could not return them anyway and stamping them would bias AMCL rather than help
     the planner. Same split tugbot_warehouse uses. See hospital_pickplace_layout
     for where they stand and how that spot was measured.
     """
