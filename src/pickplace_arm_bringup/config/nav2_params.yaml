@@ -125,12 +125,46 @@ controller_server:
       # collection table claw_approach visually servos onto the rack from
       # wherever the robot stopped, and at the delivery table place_in_slot
       # re-reads the slot and calls _close_in_on when it is out of arm's reach.
-      xy_goal_tolerance: 0.15 #0.35
+      #
+      # BACK TO 0.35 AFTER A SPELL AT 0.15, AND THE 0.15 IS WHAT THE PARAGRAPH
+      # ABOVE PREDICTS. Measured on the three-robot run, r1 at collect_0:
+      #
+      #     goal          (-8.900, -3.516)
+      #     true pose     (-8.796, -3.443)   0.128 m from the goal
+      #     AMCL estimate (-8.743, -3.544)   0.159 m from the goal
+      #
+      # i.e. the robot was parked at its collection standoff, square to the
+      # table, with the rack 1.3 m dead ahead -- and the goal checker refused it
+      # by NINE MILLIMETRES. MPPI then nudged at the goal line, the progress
+      # checker aborted it every 20 s, the Spin recovery was refused with
+      # "Collision Ahead" (collect_0's bay is the tight one), and 120 s later
+      # the mission's own nav timeout fired. run_errand treats a timed-out
+      # approach as "could not reach the collection table", so the errand
+      # retried the identical goal and deadlocked the identical way: rack_red
+      # was still sitting untouched on its table at the end of the run while
+      # r2 and r3 -- whose filters happened to land inside 0.15 -- both
+      # collected and delivered normally. It reads as "the red robot never
+      # picks up its rack"; it is really "whichever robot's AMCL residual
+      # exceeds the tolerance never arrives".
+      #
+      # mission_delivery.STANDOFF_ARRIVED_TOL is written against this number in
+      # so many words ("Nav2's own xy_goal_tolerance is 0.35 and AMCL carries
+      # ~0.15 on top"), so tightening it here also silently desynchronised the
+      # only check that verifies an arrival in the MAP frame.
+      xy_goal_tolerance: 0.35
       # Loose heading tolerance: the robot doesn't need to nail an exact final
       # yaw (the visual servo re-centres on the box, and delivery/parking don't
       # care which way it faces). A tight yaw made the skid-steer oscillate in
       # place around the goal heading, which tripped Nav2's recovery Spin.
-      yaw_goal_tolerance: 0.1 #0.5
+      #
+      # THIS IS THE DEFAULT, NOT THE APPROACH VALUE. Where an accurate arrival
+      # heading actually matters -- the collection table, the columns, the
+      # delivery standoff -- the mission tightens it to TIGHT_YAW_TOLERANCE
+      # (0.20) for that one goal and puts it back afterwards, via
+      # Mission2._set_yaw_goal_tolerance. So pinning 0.1 here bought the
+      # approaches nothing they were not already asking for, and charged every
+      # other goal in the run for it.
+      yaw_goal_tolerance: 0.5
 
     # MPPI, NOT RegulatedPurePursuit. RPP follows a path; it does not choose
     # one. It has a single collision check along the carrot and its only
@@ -246,10 +280,38 @@ controller_server:
       # with the base squaring up to a table, and the mission's own servo loops
       # turn in place whenever the target is off centre but already in reach.
       wz_max: 2.2
-      # 2.0. The path handed to the critics has to extend past both the rollout
-      # (0.99 m) and the carrot PathFollowCritic aims at, or the carrot clamps
-      # to the end of the path and the speed it implies collapses again.
-      prune_distance: 2.0
+      # 2.8, UP FROM 2.0, AND THE NOTE THAT SET THE 2.0 IS WHY.
+      #
+      # It says: "the path handed to the critics has to extend past both the
+      # rollout and the carrot PathFollowCritic aims at, or the carrot clamps to
+      # the end of the path and the speed it implies collapses again." That was
+      # right, and 2.0 satisfied it for the rollout it was written against
+      # (0.99 m). It does not satisfy it any more. Working the numbers for what
+      # this file now asks for:
+      #
+      #     rollout at vx_max   time_steps 30 x model_dt 0.05 x 0.90 = 1.35 m
+      #     carrot              + offset_from_furthest 10 x 0.05     = 1.85 m
+      #     path handed over    prune_distance                         2.00 m
+      #                                                        margin   0.15 m
+      #
+      # 0.15 m of margin on a path made of 0.05 m points, around any curve, is
+      # no margin: the carrot sits on the last point or two of the pruned path
+      # for most of a corridor, which is exactly the clamp the note warns about.
+      # And the fleet's measured cruise says so -- ground truth over a whole
+      # mission, three robots, sampled every 2 s:
+      #
+      #     r1  51.8 m of path   0.46 m/s      r2  66.1 m   0.52 m/s
+      #     r3  75.9 m of path   0.54 m/s      against vx_max 0.90
+      #
+      # i.e. still the same ~0.55 m/s ceiling the temperature and gamma notes
+      # above were chasing, with those two already fixed.
+      #
+      # 2.8 gives 0.95 m of margin instead of 0.15. It is not larger because
+      # the LOCAL COSTMAP is what really bounds this: nav2_mppi's path handler
+      # takes the smaller of prune_distance and the costmap's own half extent,
+      # and the local costmap is 6 x 6 m rolling, so 3.0 m is the ceiling and
+      # anything past it is a number that does nothing. 2.8 stays under it.
+      prune_distance: 2.8
       transform_tolerance: 0.2
       # temperature 0.15 and gamma 0.005, FROM 0.3 AND 0.015, AND THESE TWO ARE
       # WHY THE FLEET CRUISED AT 0.55 m/s WITH vx_max SET TO 0.90.

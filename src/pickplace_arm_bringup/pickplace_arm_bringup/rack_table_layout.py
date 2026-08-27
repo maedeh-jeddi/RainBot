@@ -310,19 +310,53 @@ DELIVERY_TABLE = ('delivery', (-3.50, 10.00, math.pi))
 # graze them, and enough that the front camera sees a single rack rather than a
 # smear of three. Three slots span 0.60 m inside a 1.327 m top, so the outer two
 # still have 0.30 m of table beyond them.
-# 0.26, down from 0.30, and NOT the 0.24 an earlier pass here argued for. That
-# pass asked "how far can the arm reach at +/-0.30 of lateral offset" and got
-# 0.794 m, less than the 0.8237 m the base must stand back, and concluded the
-# slots had to come in. The question was the wrong way round. Reach is one
-# sphere: once the BASE is at the right distance -- which the camera now
-# guarantees, see _table_face_ahead in mission_delivery.py -- the slot sits at
-# px = 0.81 and the arm has +/-0.329 m of lateral room there. The lateral offset
-# was never the constraint; the DEPTH was, and it was being missed by 0.2 m of
-# AMCL error rather than by geometry.
+# 0.45, UP FROM 0.26, AND THE REASON IT COULD NOT BE THIS WIDE BEFORE IS THAT
+# EVERY ROBOT USED TO PARK IN THE SAME PLACE.
 #
-# 0.26 leaves 0.10 m of air between two 0.16 m racks, and keeps 0.07 m of
-# lateral reach margin at the outer slots.
-DELIVERY_SLOT_SPACING = 0.26
+# Every previous pass at this number asked "how far sideways can the arm reach
+# from the ONE standoff in the middle of the table", and the answer bounded the
+# spacing: at the placing depth of 0.81 m the arm covers +/-0.307 m of lateral
+# offset, so slots further apart than that were simply unreachable and 0.26 was
+# what fitted with a little margin. That left 0.084 m of nominal air between two
+# 0.16 m racks -- and measured, with everything else working, red and green came
+# to rest 0.065 m apart. Two racks that close touch as soon as anything is
+# slightly off, and they did.
+#
+# THE SINGLE STANDOFF WAS THE CONSTRAINT, NOT THE ARM. A robot placing in the
+# outer slot had to reach the full 0.26 m sideways PLUS whatever its own lateral
+# error was -- up to 0.52 m, well outside the envelope -- while a robot parked
+# in front of its OWN slot only has to reach its residual error. So the robot
+# now drives to a per-slot standoff (see delivery_slots) and the lateral budget
+# is spent on error instead of on geometry, which is what lets the row open up.
+#
+# 0.38, PULLED BACK IN FROM 0.45, AND THE NUMBER THAT DECIDES IT IS THE EDGE
+# MARGIN RATHER THAN THE GAP.
+#
+# The binding limit is the table: the top is 1.327 m long, so with a rack
+# 0.16 m wide the outer slot's far edge sits at SPACING + 0.089 and whatever is
+# left over is all that stands between a placement error and a rack hanging off
+# the end. At 0.45 that leftover was 0.124 m, and a measured outer placement
+# came in 0.212 m along the row from its slot -- the rack stayed on the table
+# only because half of it was still over the top, balanced on the edge.
+#
+#     spacing   outer rack edge   table left over   air between racks
+#       0.45         0.539             0.124              0.274
+#       0.38         0.469             0.194              0.204
+#
+# 0.38 buys 0.070 m of edge margin for 0.070 m of gap, and the gap is the thing
+# there is plenty of: 0.204 m of air against the 0.084 m the row started with,
+# i.e. still two and a half times the original margin, while the edge margin
+# now covers the largest error ever recorded here with 0.019 m to spare once
+# the lateral correction is only trusted where it is well conditioned (see
+# NEAR_EDGE_MAX_BEARING in mission_delivery).
+#
+# THIS IS THE "BRING THE OUTER RACKS IN A LITTLE" CHANGE. Both outer slots move
+# 0.07 m toward the middle; the middle slot does not move.
+DELIVERY_SLOT_SPACING = 0.38
+# Left, middle, right as the robot facing the table sees them: local +x is the
+# robot's right (base_link y = -(local x - robot's local x), see the frame
+# convention at the top of this file). So slot 0 is the LEFT-hand slot, slot 2
+# the right-hand one, and the manager hands them out in that order.
 DELIVERY_SLOT_LOCAL_X = (-DELIVERY_SLOT_SPACING, 0.0, DELIVERY_SLOT_SPACING)
 
 
@@ -341,18 +375,31 @@ def delivery_slots():
     """[(index, slot_xy, robot_pose)] for the three places a rack can be put
     down, left to right as the robot sees them.
 
-    THE PER-SLOT ROBOT POSE IS GEOMETRY, NOT A DRIVING INSTRUCTION. Measured on
-    a real run, a robot sent to each of these three standoffs in turn arrived
-    0.34, 0.47 and 0.45 m from the pose it was given -- every goal succeeded,
-    because that is inside Nav2's own 0.20 m tolerance plus AMCL's error, but it
-    is LARGER THAN THE 0.30 m SLOT SPACING. Driving to a slot's standoff
-    therefore cannot address that slot: the robot may well end up squarely in
-    front of its neighbour.
+    THE PER-SLOT ROBOT POSE IS A DRIVING INSTRUCTION AGAIN, and the objection
+    that made it geometry-only has expired. It used to read: a robot sent to
+    one of these standoffs arrives 0.34 to 0.47 m from the pose it was given,
+    which is LARGER THAN THE SLOT SPACING, so driving to a slot's standoff
+    cannot address that slot -- the robot may end up squarely in front of its
+    neighbour. Everything in that is still true about the DRIVE. It stopped
+    mattering when the placement stopped being computed from the drive.
 
-    So whatever fills these slots should park ONCE, at DELIVERY_STANDOFF below,
-    and reach the 0.30 m sideways with the ARM, which is precise. The mission
-    code already commands a lateral y for placement, so this is the arm doing
-    what it already does rather than anything new.
+    Which slot is which is now anchored to the TABLE, not to the robot: the
+    lidar fits the table's front face, the camera measures its depth, and the
+    slot is built in that face's own frame (see _slot_on_face in
+    mission_delivery.py). A robot that arrives half a metre off still knows
+    exactly where all three slots are -- it just has to reach a little further
+    sideways.
+
+    So the standoff no longer decides WHICH slot; it decides HOW FAR the arm has
+    to reach. Parking once in the middle spent the whole lateral budget on the
+    slot offset and left none for error, which capped the row at 0.26 m and put
+    two racks 0.065 m apart. Parking in front of the slot spends it all on
+    error: the nominal lateral offset is zero, and the arm's +/-0.307 m at the
+    placing depth is then pure margin against a residual measured at 0.09 to
+    0.26 m.
+
+    Clearance at the three standoffs, measured against maps/aws_hospital.pgm
+    with the delivery table's own footprint excluded: 3.08, 2.66 and 2.25 m.
     """
     _, table = DELIVERY_TABLE
     out = []
@@ -363,15 +410,20 @@ def delivery_slots():
     return out
 
 
-def delivery_standoff():
-    """The ONE pose a robot drives to in order to use the delivery table.
+def delivery_standoff(slot_index=None):
+    """The pose a robot drives to in order to use the delivery table.
 
-    Centred on the table, so all three slots sit within +/- 0.30 m of the
-    gripper's lateral reach from here. See delivery_slots() for why there is a
-    single standoff rather than one per slot.
+    With a slot index, the standoff directly in front of THAT slot -- which is
+    what a robot about to place should ask for, so the arm's lateral reach is
+    spent on its own error rather than on the width of the row. See
+    delivery_slots() for why that changed.
+
+    With no index, the standoff centred on the table: the neutral pose for
+    anything that has to be at the table without placing in a particular slot.
     """
     _, table = DELIVERY_TABLE
-    return _to_world(table, 0.0, DELIVERY_STANDOFF_LOCAL_Y) + (_robot_yaw(table),)
+    lx = 0.0 if slot_index is None else DELIVERY_SLOT_LOCAL_X[slot_index]
+    return _to_world(table, lx, DELIVERY_STANDOFF_LOCAL_Y) + (_robot_yaw(table),)
 
 
 def delivery_table_pose():
@@ -380,42 +432,9 @@ def delivery_table_pose():
 
 # --- where robots WAIT for the delivery table ---------------------------------
 #
-# One reserved spot per robot, abreast, 1.4 m behind the single standoff.
-#
-# WHY A QUEUE EXISTS AT ALL. Only one robot can use the delivery table at a
-# time -- there is one standoff and the arm has to reach across all three slots
-# from it -- but the fleet is supposed to run its three errands concurrently,
-# so at some point three robots want the same 0.7 m of floor. Previously the
-# loser simply never left its collection table, which met the letter of "one at
-# a time" and none of its intent.
-#
-# ABREAST RATHER THAN NOSE-TO-TAIL, and that is the whole design. A single file
-# behind the standoff would mean the robot at the back cannot reach the table
-# without the robots in front of it moving first, so the grant order would have
-# to match the queue order -- and it does not: the table is granted to whoever
-# asks first. Side by side, each spot has its own straight run in to the
-# standoff and the three are independent.
-#
-# 0.9 m apart is comfortable for a 0.25 m robot_radius with 0.45 m inflation:
-# the inflated discs touch but the inscribed ones are 0.4 m clear, so a robot
-# sitting here is never an obstacle its neighbour must plan around.
-DELIVERY_QUEUE_LOCAL_Y = DELIVERY_STANDOFF_LOCAL_Y - 1.40
-DELIVERY_QUEUE_LOCAL_X = (0.90, 0.00, -0.90)
-
-
-# --- where robots WAIT for the delivery table ---------------------------------
-#
-# A DISTANCE, NOT A PARKING SPOT. Each robot drives toward the delivery table
-# and stops once it is DELIVERY_HOLD_RADIUS away from it, wherever on that
-# circle its own approach happens to put it. Nobody is assigned a place.
-#
-# This replaces three reserved spots abreast. Those worked, but they made the
-# robot's waiting position depend on its INDEX rather than on where it was
-# coming from, so a robot arriving from the south was sent across the front of
-# the table to reach "its" spot on the far side. Holding at a radius means the
-# robot stops on the way in, which is both shorter and out of everyone's way:
-# the three collection tables are in different parts of the building, so the
-# three approach bearings are naturally spread around the circle.
+# A RESERVED BEARING ON A CIRCLE, ONE PER ROBOT. Each robot drives toward the
+# delivery table and stops at ITS OWN point on the DELIVERY_HOLD_RADIUS circle,
+# facing the table.
 #
 # 3.0 m is chosen against the geometry it has to clear: the delivery standoff
 # sits 0.75 m from the table centre and the placing robot needs room to turn
@@ -425,34 +444,77 @@ DELIVERY_QUEUE_LOCAL_X = (0.90, 0.00, -0.90)
 # where it believed it was.
 DELIVERY_HOLD_RADIUS = 3.00
 
+# THE BEARING IS RESERVED, NOT DERIVED FROM THE APPROACH, AND THAT IS THE WHOLE
+# POINT OF THIS BLOCK.
+#
+# It used to be derived: the robot stopped wherever the line from its own
+# position to the table crossed the circle. The argument for it was that "the
+# three collection tables are in different parts of the building, so the three
+# approach bearings are naturally spread around the circle". THAT IS FALSE FOR
+# THIS LAYOUT, and it is false in the one way that matters. All three
+# collection tables are SOUTH of the lobby, so all three robots arrive from the
+# south, and two of them arrive from almost the same bearing:
+#
+#     r1 / red    from collect_0   bearing -111.8 deg   hold (-4.613, 7.214)
+#     r3 / blue   from collect_2   bearing  -98.5 deg   hold (-3.946, 7.033)
+#     r2 / green  from collect_1   bearing  -68.8 deg   hold (-2.417, 7.202)
+#
+# red and blue are 13.3 degrees apart on a 3 m circle, i.e. 0.691 m between the
+# two poses -- against the 1.196 m that two Husky circumscribed radii need. The
+# fleet was therefore SENT TO TWO OVERLAPPING POSES: not a near miss the local
+# costmap could resolve, but two goals whose chassis interpenetrate, both held
+# until the manager's rendezvous released them. The two robots ground into each
+# other for the whole wait. (green was safe by luck, at 2.20 and 1.54 m.)
+#
+# Deriving the bearing cannot be repaired by widening the circle either: two
+# robots arriving 13 degrees apart need R >= 6.0 m to be 1.6 m apart, which is
+# through the lobby's west wall, and nothing bounds the angle anyway -- two
+# identical bearings stay identical at any radius. The angle has to be reserved.
+#
+# CHOSEN BY MEASUREMENT AGAINST maps/aws_hospital.pgm, the same way the fleet
+# formation and the collection tables were. Every bearing on the circle was
+# scored for clearance to the nearest occupied cell, and triples were searched
+# for the one maximising the WORST clearance subject to every pair being at
+# least 1.60 m apart, keeping the arc order the same as the natural approach
+# order so no robot's run in crosses another's:
+#
+#     index 0   r1 / red     -116 deg   (-4.815, 7.304)   1.83 m clear
+#     index 2   r3 / blue     -85 deg   (-3.239, 7.011)   1.80 m clear
+#     index 1   r2 / green    -43 deg   (-1.306, 7.954)   1.81 m clear
+#
+#     red <-> blue 1.60 m    blue <-> green 2.15 m    red <-> green 3.57 m
+#
+# i.e. 0.40 m of daylight past the 1.196 m requirement at the tightest pair, and
+# 1.20 m past the 0.598 m circumscribed radius at the worst pose. The west side
+# of the circle is a wall (clearance falls under 0.6 m past -135 deg) and is not
+# used; every bearing here is on the south side the robots arrive from, so
+# nobody crosses the front of the table to reach its hold pose. Each is 2.9 to
+# 3.8 m from the delivery standoff, so a waiting robot is never in the way of
+# the working one.
+#
+# INDEXED THE SAME WAY ARM_ROBOTS IS, which is what makes the reservation
+# race-free: assignment is static, so two robots can never choose the same spot.
+DELIVERY_HOLD_BEARINGS = (
+    math.radians(-116.0),      # index 0 -- r1, arriving from collect_0
+    math.radians(-43.0),       # index 1 -- r2, arriving from collect_1
+    math.radians(-85.0),       # index 2 -- r3, arriving from collect_2
+)
 
-def delivery_hold_pose(from_xy):
-    """Where to stop when approaching the delivery table from `from_xy`.
 
-    Returns (x, y, yaw) on the DELIVERY_HOLD_RADIUS circle, on the line between
-    the caller and the table, facing the table -- so the robot is already
-    pointing the right way when its turn comes.
+def delivery_hold_pose(index):
+    """Where robot `index` waits for its turn at the delivery table.
+
+    Returns (x, y, yaw) on the DELIVERY_HOLD_RADIUS circle at that robot's
+    reserved bearing, facing the table -- so it is already pointing the right
+    way when its turn comes. See DELIVERY_HOLD_BEARINGS for why the bearing is
+    reserved per robot rather than taken from the approach direction.
     """
     tx, ty, _ = DELIVERY_TABLE[1]
-    dx, dy = from_xy[0] - tx, from_xy[1] - ty
-    d = math.hypot(dx, dy)
-    if d < 1e-3:                       # already on top of it; pick any bearing
-        dx, dy, d = 0.0, -1.0, 1.0
-    ux, uy = dx / d, dy / d
+    a = DELIVERY_HOLD_BEARINGS[index % len(DELIVERY_HOLD_BEARINGS)]
+    ux, uy = math.cos(a), math.sin(a)
     return (tx + ux * DELIVERY_HOLD_RADIUS,
             ty + uy * DELIVERY_HOLD_RADIUS,
             math.atan2(-uy, -ux))
-
-
-def delivery_queue():
-    """One waiting pose per robot, indexed the same way ARM_ROBOTS is.
-
-    Each faces the delivery table, so a robot that is granted the table only
-    has to drive forward rather than turn around in company.
-    """
-    _, table = DELIVERY_TABLE
-    return [_to_world(table, lx, DELIVERY_QUEUE_LOCAL_Y) + (_robot_yaw(table),)
-            for lx in DELIVERY_QUEUE_LOCAL_X]
 
 
 # --- what belongs in the map --------------------------------------------------

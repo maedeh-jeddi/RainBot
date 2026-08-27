@@ -23,11 +23,14 @@ in the one node that can see all three robots at once. Two rules do it:
                      end to end. See the constant for what had to change in the
                      controller before that was safe.
 
-  DELIVERY QUEUE     one reserved waiting spot per robot, 1.4 m behind the
-                     delivery standoff, so all three make the trip as soon as
-                     they are carrying and wait AT the table rather than at
-                     their collection benches. See
-                     rack_table_layout.delivery_queue().
+  DELIVERY QUEUE     one reserved waiting BEARING per robot on a 3 m circle
+                     around the delivery table, so all three make the trip as
+                     soon as they are carrying and wait AT the table rather
+                     than at their collection benches. Reserved rather than
+                     derived from the approach direction, because all three
+                     collection tables are south of the lobby and two of the
+                     three approaches cross: see DELIVERY_HOLD_BEARINGS in
+                     rack_table_layout.
 
   DELIVERY LOCK      only one robot may be working at the delivery table at a
                      time. Its standoff, the creep in and the arm placement all

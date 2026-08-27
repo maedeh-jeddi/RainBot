@@ -375,6 +375,12 @@ class DeliveryMission(Mission2Hospital):
     FACE_TOL = 0.04           # m; inside this, do not bother moving
     FACE_STEP_MAX = 0.45      # m; a bigger correction than this is a bad reading
     FACE_MIN_SAFE = 0.52      # m; never drive so the face is nearer than this
+    # How far the table's face may be and the robot still count as HAVING
+    # ARRIVED at it (see _drive_to_delivery_standoff). Not the same question as
+    # FACE_TARGET, which is where the base must end up: this only has to be
+    # close enough that _square_up_on_table can still close the gap, and it
+    # closes at most FACE_STEP_MAX per try over three tries.
+    FACE_ARRIVED_MAX = 1.20
 
     # Deliberately slow: at 0.10 m/s the base reaches speed in 0.04 s under the
     # 2.5 m/s^2 limit, so "time x speed" is the distance to within a couple of
@@ -416,9 +422,63 @@ class DeliveryMission(Mission2Hospital):
     # table's far edge is 0.172 m deeper than its near edge, so 0.30 holds the
     # whole face with room to spare, and the line fit then takes the tilt out.
     # The lobby wall behind the table is metres away and never enters it.
-    FACE_SEARCH_TOL = 0.30
+    # 0.40, up from 0.30, BECAUSE THE ROBOT NO LONGER STANDS ON THE TABLE'S
+    # CENTRE LINE. At a per-slot standoff it sits 0.45 m to one side, so the
+    # face midpoint is 0.45*tan(yaw) deeper or shallower than the point the
+    # camera reads dead ahead, on top of the half-span the note above accounts
+    # for. Measured over the yaw range the lidar can still see both corners at,
+    # the face spans up to 0.31 m in base_link x -- which 0.30 clips. Nothing
+    # else is within 0.40 m of the face depth at this standoff (clearance there
+    # is 2.25 m or better with the table excluded), so the wider window costs
+    # the line fit nothing.
+    FACE_SEARCH_TOL = 0.40
+    # The shortest run of face that can still be measured from ONE edge. Below
+    # this there is not enough of a line to fit a direction through with any
+    # confidence, whatever its ends are doing.
+    PARTIAL_WIDTH_MIN = 0.80
+    # How far off the bow a face's end may sit and still be believed to be the
+    # table's own edge rather than the end of the lidar's sweep.
+    #
+    # 65, DOWN FROM 80, AND THE 80 WAS TOO GENEROUS BY MEASUREMENT. The scan
+    # spans 190 deg, so 80 leaves 15 deg of arc past the edge and looked like
+    # enough. It is not: an end at 74 deg was accepted on a real placement and
+    # put the rack 212 mm along the row from its slot, while the same robot
+    # placing with no lateral correction at all was 23 mm out. At that
+    # incidence the last stretch of face is being sampled edge-on, where a
+    # centimetre of range noise is ten of position, so "the returns stop here"
+    # stops meaning "the table stops here".
+    #
+    # 65 keeps the ends this is willing to measure from inside the part of the
+    # sweep where the beams still strike the face at a useful angle. An end
+    # beyond it is not refused outright -- the placement falls through to
+    # straight ahead, which is the slot's own standoff direction. See
+    # _slot_from_sensors_only.
+    NEAR_EDGE_MAX_BEARING = 65.0
 
-    def _table_centre_offset(self, face_x):
+    @staticmethod
+    def _near_edge_for(slot_index):
+        """Which end of the delivery table's face is the WELL-SEEN one, as +1
+        for the robot's left, -1 for its right, 0 for neither.
+
+        The standoff is directly in front of the slot being placed in, so this
+        falls straight out of the slot's own offset: base_link y runs opposite
+        to the table's local x, so a robot in front of a slot at NEGATIVE local
+        x has the table's near corner on its LEFT, and vice versa. A robot at
+        the middle slot is centred and should see both corners, so neither end
+        is privileged.
+
+        Returning 0 rather than guessing is what keeps the middle slot on the
+        stricter both-edges measurement, which is the better one where it is
+        available.
+        """
+        if slot_index is None:
+            return 0
+        lx = RT.DELIVERY_SLOT_LOCAL_X[slot_index]
+        if abs(lx) < 1e-6:
+            return 0
+        return 1 if lx < 0.0 else -1
+
+    def _table_centre_offset(self, face_x, near_edge=0):
         """Lateral offset from the bow to the delivery table's CENTRE, measured.
 
         WHY THIS EXISTS, WITH THE NUMBERS THAT PUT IT HERE. Depth was taken off
@@ -441,9 +501,11 @@ class DeliveryMission(Mission2Hospital):
         removes it is giving every robot the same physical reference instead of
         three independent estimates of it: the table itself.
 
-        Returns the table centre's y in base_link, or None if the face could not
-        be measured well enough to trust -- in which case the caller keeps the
-        map estimate rather than acting on a bad correction.
+        Returns the measured face as (centre, dirx, diry) in base_link -- the
+        midpoint's y and the face's unit direction, normalised to point to the
+        robot's left -- or None if the face could not be measured well enough to
+        trust, in which case the caller keeps the map estimate rather than
+        acting on a bad correction. _slot_on_face turns it into a slot.
         """
         log = self.get_logger()
         with self._scan_lock:
@@ -534,22 +596,146 @@ class DeliveryMission(Mission2Hospital):
         s = dirx * (bx[on_face] - mx) + diry * (by[on_face] - my)
         lo, hi = float(s.min()), float(s.max())
         width = hi - lo
-        if not (self.TABLE_WIDTH_LO <= width <= self.TABLE_WIDTH_HI):
+        if width > self.TABLE_WIDTH_HI:
             log.warn(f'[{self.ns}] table face measured {width:.3f} m wide '
-                     f'({n} returns), not the expected {RT.TABLE_LONG:.3f} -- '
-                     f'refusing the lateral correction')
+                     f'({n} returns), wider than any table -- refusing the '
+                     f'lateral correction')
+            return None
+
+        # WHICH END OF THE FACE THE CENTRE IS MEASURED FROM.
+        #
+        # THE MIDPOINT ONLY WORKS IF BOTH ENDS ARE REAL EDGES, and at a per-slot
+        # standoff one of them is not. The robot stands 0.45 m off the table's
+        # centre line, so the far half of the face is seen at a very shallow
+        # angle: the beams still reach it, but their perpendicular scatter grows
+        # with the incidence angle until the returns nearest the far corner fall
+        # outside FACE_PLANE_TOL and are dropped. The run then ENDS EARLY, and
+        # its midpoint is not the table's centre -- it has walked toward the
+        # near end by half of whatever was lost.
+        #
+        # Measured, with the row opened out to 0.45 and the robots standing in
+        # front of their own slots:
+        #
+        #     r2, centre standoff   1.227 - 1.270 m   (both edges, fine)
+        #     r1, slot 0 standoff   1.105, 1.139 m    refused
+        #     r3, slot 2 standoff   1.104, 1.134, 0.889 m   refused
+        #
+        # and the run that produced those numbers delivered ONE rack of three.
+        # Ground truth says nothing was wrong with the robots: r3 sat 0.09 m
+        # from its standoff with 0.10-0.33 m of AMCL error for fifty seconds
+        # while this check refused every frame.
+        #
+        # So do not measure from the midpoint. THE NEAR EDGE IS ALWAYS WELL
+        # CONDITIONED -- it is the closest part of the face and the one the
+        # beams strike most nearly head-on -- and the table's length is known
+        # exactly, so one edge fixes the centre just as well as two:
+        #
+        #     centre = near edge -/+ TABLE_LONG / 2
+        #
+        # Which edge is the near one is not guessed either: it follows from the
+        # slot being placed in, because the standoff is directly in front of it.
+        # See _near_edge_for.
+        near_s = None
+        if self.TABLE_WIDTH_LO <= width:
+            method, centre_s = 'both edges', (lo + hi) / 2.0
+        elif near_edge and width >= self.PARTIAL_WIDTH_MIN:
+            near_s = hi if near_edge > 0 else lo
+            # AND THE NEAR EDGE HAS TO BE A REAL EDGE. If the run ended because
+            # the scan ran out of arc rather than because the table did, this
+            # end is a cut too and the arithmetic below would be measuring from
+            # nothing. A real edge sits well inside the sweep; a cut one sits at
+            # its limit.
+            ex = mx + dirx * near_s
+            ey = my + diry * near_s
+            bearing = abs(math.degrees(math.atan2(ey - t.y, ex - t.x)))
+            if bearing > self.NEAR_EDGE_MAX_BEARING:
+                log.warn(f'[{self.ns}] table face measured {width:.3f} m wide '
+                         f'({n} returns) and its near end sits {bearing:.0f} deg '
+                         f'off the bow, at the edge of the sweep -- that is a '
+                         f'cut, not an edge; refusing the lateral correction')
+                return None
+            method = f'near edge at {bearing:.0f} deg'
+            centre_s = near_s - near_edge * RT.TABLE_LONG / 2.0
+        else:
+            log.warn(f'[{self.ns}] table face measured {width:.3f} m wide '
+                     f'({n} returns), not the expected {RT.TABLE_LONG:.3f} and '
+                     f'too short to measure from one edge -- refusing the '
+                     f'lateral correction')
             return None
         # The midpoint of the face, taken back into base_link. Only its y is
         # wanted: depth stays the camera's job (see _table_face_ahead), and the
         # two measurements are deliberately kept on separate sensors so a bad
         # reading on one cannot quietly move the other.
-        mid = (lo + hi) / 2.0
-        centre = my + diry * mid
+        centre = my + diry * centre_s
         yaw_deg = math.degrees(math.atan2(dirx, abs(diry) if diry else 1e-9))
         log.info(f'[{self.ns}] table centre measured at base_link y={centre:+.3f} '
-                 f'(face {width:.3f} m wide, {n} returns, {yaw_deg:+.1f} deg off '
-                 f'square)')
-        return centre
+                 f'from the {method} (face {width:.3f} m wide, {n} returns, '
+                 f'{yaw_deg:+.1f} deg off square)')
+        # THE DIRECTION IS RETURNED, NOT JUST THE MIDPOINT, and that is what
+        # stopped two racks touching. This function has always MEASURED the yaw
+        # -- it is in the log line above -- and then thrown it away, leaving the
+        # caller to step sideways to a slot along base_link y as if the face
+        # were square to the bow. It is not: 8.5 to 13 degrees is ordinary here,
+        # and at 8.6 degrees stepping 0.265 m of slot depth along the bow
+        # instead of along the face normal walks the rack 0.040 m ALONG THE ROW.
+        # One robot's 0.040 m is harmless; two neighbours whose yaw errors have
+        # opposite signs are 0.080 m closer than they should be, against 0.100 m
+        # of air between two 0.16 m racks in 0.26 m slots. See _slot_on_face.
+        #
+        # Sign normalised so the direction points to the robot's LEFT (+y),
+        # which is the direction a slot's negative local x lies in. `centre`
+        # itself is sign-invariant -- flipping the SVD's axis flips `mid` with
+        # it -- so only the returned direction needs pinning down.
+        if diry < 0.0:
+            dirx, diry = -dirx, -diry
+        # A face fit this far from square is not a placement to correct, it is a
+        # robot that is not at the table. Refuse, exactly as the width check
+        # does, and let the caller fall back rather than divide by a vanishing
+        # cosine below.
+        if diry < math.cos(math.radians(45.0)):
+            log.warn(f'[{self.ns}] table face is {yaw_deg:+.1f} deg off square '
+                     f'-- too far to correct a slot against; refusing the '
+                     f'lateral correction')
+            return None
+        return (centre, dirx, diry)
+
+    # How far behind the table's near FACE a slot centre sits. The face is the
+    # thing both sensors can actually see; the slot is a convention measured
+    # from the table's origin, so this is the one converting it to the other.
+    SLOT_BEHIND_FACE = RT.DELIVERY_SLOT_LOCAL_Y + RT.TABLE_NEAR_FACE
+
+    def _slot_on_face(self, face_x, frame, slot_index):
+        """Where slot `slot_index` is in base_link, IN THE MEASURED FACE'S OWN
+        FRAME rather than in the robot's.
+
+        `face_x` is the camera's forward reading of the face and `frame` is
+        _table_centre_offset's (centre, dirx, diry). The two sensors stay split
+        exactly as before -- depth is the camera's, the lateral midpoint and now
+        the DIRECTION are the lidar's -- but the slot is built from them as a
+        point on the table instead of as an offset from the bow:
+
+            M   the face midpoint: the point on the fitted face line whose
+                base_link y is the measured centre, at the camera's depth
+            d   along the face, towards the robot's left
+            n   into the table, perpendicular to the face
+
+            slot = M - slot_local_x * d + SLOT_BEHIND_FACE * n
+
+        At zero yaw this is identical to the arithmetic it replaces, which is
+        why the square case needs no re-tuning; it differs only by the yaw the
+        old version pretended was not there.
+        """
+        centre, dirx, diry = frame
+        # The face line contains the point the camera measured dead ahead,
+        # (face_x, 0). Slide along it to the y the lidar puts the midpoint at.
+        mx = face_x + dirx * (centre / diry)
+        my = centre
+        # Into the table: perpendicular to d, forward-pointing (+x) because
+        # diry has been normalised positive.
+        nx, ny = diry, -dirx
+        s = -RT.DELIVERY_SLOT_LOCAL_X[slot_index]
+        return (mx + s * dirx + self.SLOT_BEHIND_FACE * nx,
+                my + s * diry + self.SLOT_BEHIND_FACE * ny)
 
     def _square_up_on_table(self, tries=3):
         """Drive the base until the delivery table's face is at FACE_TARGET.
@@ -742,7 +928,7 @@ class DeliveryMission(Mission2Hospital):
     # else entirely and "Nav2 reached goal" was not true.
     STANDOFF_ARRIVED_TOL = 0.60
 
-    def _drive_to_delivery_standoff(self, attempts=3):
+    def _drive_to_delivery_standoff(self, slot_index=None, attempts=3):
         """Get to the delivery standoff, and VERIFY it rather than believe Nav2.
 
         NAV2 REPORTS SUCCESS FOR THIS GOAL WITHOUT MOVING THE ROBOT, and until
@@ -769,18 +955,45 @@ class DeliveryMission(Mission2Hospital):
         the controller the "already there" answer it kept giving.
         """
         log = self.get_logger()
-        stand = RT.delivery_standoff()
+        stand = RT.delivery_standoff(slot_index)
         for attempt in range(1, attempts + 1):
             ok = self._navigate_with_recovery(stand, 'the delivery table',
                                               attempts=2, tight_yaw=True)
             d = self._range_to(stand[:2])
             if ok and d is not None and d <= self.STANDOFF_ARRIVED_TOL:
                 return True
+            # ASK THE SENSORS BEFORE SPINNING. The check above is a statement
+            # about AMCL, and AMCL is the thing that is wrong when it fires:
+            # measured, r3 was told it was 4.00 m from the standoff while it sat
+            # squarely in front of the table, and the camera read the face at
+            # 0.804 m on the first frame it was asked for. Spending a full
+            # in-place turn and two reparks proving the filter wrong -- which is
+            # what "the blue robot just keeps rotating" looked like from outside
+            # -- bought nothing, because the placement that follows is computed
+            # from these same sensors anyway.
+            #
+            # BOTH SENSORS, NOT JUST THE CAMERA. The camera alone would accept a
+            # WALL: it looks for a flat vertical surface in a height band at
+            # placing range, and a wall is one. Requiring the lidar to fit a
+            # face of TABLE-WIDTH there as well is what makes this a test for a
+            # table rather than for an obstacle, and it is the same test the
+            # placement itself has to pass a moment later.
+            face = self._table_face_ahead()
+            if face is not None and face <= self.FACE_ARRIVED_MAX \
+                    and self._table_centre_offset(
+                        face, self._near_edge_for(slot_index)) is not None:
+                log.warn(f'[{self.ns}] map -> base_link puts the robot '
+                         f'{"unknown" if d is None else format(d, ".2f")} m '
+                         f'from the delivery standoff, but the camera and lidar '
+                         f'both have the table face at {face:.3f} m -- '
+                         f'believing the sensors')
+                return True
             if ok and d is not None:
                 log.warn(f'[{self.ns}] Nav2 reported the delivery standoff '
                          f'reached, but map -> base_link puts the robot '
                          f'{d:.2f} m away (tolerance '
-                         f'{self.STANDOFF_ARRIVED_TOL:.2f}) -- not believing it')
+                         f'{self.STANDOFF_ARRIVED_TOL:.2f}) and the camera '
+                         f'cannot see the table -- not believing it')
             if attempt < attempts:
                 # Rotating in place is the only lever that both re-converges
                 # AMCL and guarantees the next goal is not answered from a
@@ -789,7 +1002,7 @@ class DeliveryMission(Mission2Hospital):
         log.error(f'[{self.ns}] could not reach the delivery standoff')
         return False
 
-    def _repark_at_standoff(self, why):
+    def _repark_at_standoff(self, why, slot_index=None):
         """Go back to the delivery standoff and face the table.
 
         This is the recovery for a slot reading that says the robot is not where
@@ -803,12 +1016,54 @@ class DeliveryMission(Mission2Hospital):
         """
         self.get_logger().warn(
             f'[{self.ns}] {why} -- re-parking at the delivery standoff')
-        return self._drive_to_delivery_standoff(attempts=2)
+        return self._drive_to_delivery_standoff(slot_index, attempts=2)
 
     def place_in_slot(self, slot_index, slot_xy):
         """Put the carried rack down in `slot_xy` (map frame) and let go."""
         log = self.get_logger()
         target = None
+
+        # THE SENSORS GO FIRST, AND THEY USED TO GO LAST.
+        #
+        # Both axes of the placement are already measured -- depth from the
+        # camera, lateral and direction from the lidar's fit of the table face
+        # (see _slot_on_face). The map estimate contributes NOTHING to where the
+        # rack ends up; it was only ever used to decide whether to trust the
+        # measurement. That is backwards, and it is what the blue robot's
+        # spinning was. Measured, r3 on the run that motivated this:
+        #
+        #     slot 2 reads base_link (-0.753,-1.164)   -> "not a slot" -> repark
+        #     slot 2 reads base_link (-1.047,-0.889)   -> "not a slot" -> repark
+        #     slot 2 reads base_link (-1.091,-0.831)   -> "not a slot"
+        #     table face measured at base_link x=0.804 (11606 points)
+        #     slot 2 recovered from the camera and lidar alone at (+0.824,+0.026)
+        #
+        # The robot was in front of the table the whole time, its filter had it
+        # a metre behind itself, and the sensors found the slot on the first
+        # frame they were asked for -- after a full in-place turn and three
+        # goals answered from a standstill had already been spent.
+        #
+        # THE MEASUREMENT VALIDATES ITSELF, which is why it does not need the
+        # map's permission: the camera has to find a face at placing range AND
+        # the lidar has to fit one 1.15-1.50 m wide there. Nothing but this
+        # table passes both.
+        #
+        # The map path below is still the fallback, for the case the sensors
+        # genuinely cannot see the table -- which is the case where reparking is
+        # the right answer rather than a way of arguing with the filter.
+        sensed = self._slot_from_sensors_only(slot_index)
+        if sensed is not None:
+            log.info(f'[{self.ns}] slot {slot_index} measured from the camera '
+                     f'and lidar at base_link ({sensed[0]:+.3f},'
+                     f'{sensed[1]:+.3f})')
+            if self._slot_reading_is_sane(sensed):
+                return self._lower_into_slot(slot_index, *sensed)
+            log.warn(f'[{self.ns}] measured slot {slot_index} is not in front '
+                     f'of the robot -- falling back to the map estimate')
+        else:
+            log.warn(f'[{self.ns}] could not measure the table -- falling back '
+                     f'to the map estimate')
+
         # TWO DIFFERENT THINGS CAN BE WRONG WITH A SLOT READING, AND THEY NEED
         # OPPOSITE RESPONSES. The loop used to treat both as "out of reach".
         #
@@ -831,7 +1086,8 @@ class DeliveryMission(Mission2Hospital):
                          f'slot in front of the table -- treating this as a '
                          f'POSE problem, not a reach problem')
                 if attempt == 2 or not self._repark_at_standoff(
-                        f'slot {slot_index} reading is off the table'):
+                        f'slot {slot_index} reading is off the table',
+                        slot_index):
                     # ASK THE SENSORS BEFORE GIVING UP, because this branch is
                     # a statement about AMCL and not about the robot. Measured,
                     # r1 on the 17:22 run: the standoff check passed, then the
@@ -896,34 +1152,39 @@ class DeliveryMission(Mission2Hospital):
         # the base was 0.24 m too far back.
         #
         # So this drives the base until the MEASURED face is where the standoff
-        # says it should be, and only then computes the slot from it. py -- which
-        # slot, left to right -- still comes from the map, because the three
-        # slots are a convention rather than anything the sensor can tell apart.
-        # Depth is the axis a rack falls off, and depth is now measured.
+        # says it should be, and only then computes the slot from it. Which slot
+        # -- left to right -- is still a convention rather than anything a sensor
+        # can tell apart; where that convention lands on the real table is what
+        # is measured. Depth is the axis a rack falls off, and depth is measured.
         face = self._square_up_on_table()
         if face is not None:
-            px = face + (RT.DELIVERY_SLOT_LOCAL_Y + RT.TABLE_NEAR_FACE)
+            px = face + self.SLOT_BEHIND_FACE
             log.info(f'[{self.ns}] slot depth from the measured table face: '
                      f'{px:.3f} m')
             # AND THE SIDEWAYS AXIS OFF AMCL TOO, for the reason spelled out in
             # _table_centre_offset: one robot's 0.10 m error is harmless, two
             # robots' errors pointing at each other are not, and only a shared
-            # physical reference removes that. Slot local x runs the opposite
-            # way to base_link y here -- the robot faces the table -- which is
-            # the minus. Measured centred, slot 0 sits at y = +0.260.
+            # physical reference removes that.
+            #
+            # BOTH AXES COME BACK TOGETHER, from the face's own frame. Stepping
+            # the slot offset along base_link y -- which is what this did -- is
+            # only the same thing when the robot is square to the table, and it
+            # never is. See _slot_on_face.
             #
             # MEASURED AFTER THE SQUARE-UP, NOT BEFORE. py used to be carried
             # over from _settled_slot, which reads before the base has closed in
             # on the table; the three nudges that follow move the robot up to
             # 0.43 m and any yaw they pick up walks the old lateral reading off.
             # This reads the table where the arm is actually going to work.
-            centre = self._table_centre_offset(face)
-            if centre is not None:
-                was = py
-                py = centre - RT.DELIVERY_SLOT_LOCAL_X[slot_index]
-                log.info(f'[{self.ns}] slot {slot_index} lateral from the '
-                         f'measured table: {py:+.3f} m (map said {was:+.3f}, '
-                         f'correction {py - was:+.3f})')
+            frame = self._table_centre_offset(
+                face, self._near_edge_for(slot_index))
+            if frame is not None:
+                was_x, was_y = px, py
+                px, py = self._slot_on_face(face, frame, slot_index)
+                log.info(f'[{self.ns}] slot {slot_index} on the measured table '
+                         f'face: ({px:+.3f},{py:+.3f}) m (map said '
+                         f'({was_x:+.3f},{was_y:+.3f}), correction '
+                         f'({px - was_x:+.3f},{py - was_y:+.3f}))')
         else:
             log.warn(f'[{self.ns}] could not measure the table face -- placing '
                      f'on the map estimate alone, which is what put a rack on '
@@ -946,31 +1207,50 @@ class DeliveryMission(Mission2Hospital):
     def _slot_from_sensors_only(self, slot_index):
         """Where slot `slot_index` is, from the camera and lidar and nothing else.
 
-        The recovery for an AMCL estimate that has diverged far enough that the
-        map-frame slot reading is nonsense. Both measurements are of the TABLE,
-        so neither depends on the robot knowing where it is:
+        Both measurements are of the TABLE, so neither depends on the robot
+        knowing where it is:
 
             depth    the camera's face reading, squared up to FACE_TARGET
-            lateral  the midpoint of the lidar's fitted face line
+            lateral  the lidar's fit of the face
 
-        Returns (px, py) in base_link, or None if either sensor could not see
-        enough of the table to be believed -- in which case the caller is right
-        to give up, because at that point nothing on this robot can find it.
+        THE LATERAL READING IS OPTIONAL, AND THAT IS THE POINT OF THE PER-SLOT
+        STANDOFF. The robot parks directly in front of the slot it is placing
+        in, so STRAIGHT AHEAD IS ALREADY THE SLOT. The lidar's job is only to
+        take out the base's own lateral error; when it cannot see enough of the
+        face to do that, placing straight ahead is not a guess, it is the slot
+        minus a correction -- and the correction is the small term.
+
+        Measured on the run that made this the fallback rather than a failure,
+        placement error along the row against each robot's own slot:
+
+            r2  centre slot, lidar saw both edges (1.308 m)      6 mm
+            r1  outer slot, lidar saw both edges (1.166 m)      60 mm
+            r3  outer slot, lidar saw one edge   (1.115 m)     212 mm
+            r3  the same placement with NO lateral correction    23 mm
+
+        i.e. the correction earns its place when the whole face is in view and
+        actively hurts when it is not. Refusing to place at all, which is what
+        this used to do, was the worst of the three: r3 carried its rack to the
+        car park rather than set it down 23 mm off.
+
+        Returns (px, py) in base_link, or None only if the CAMERA cannot see the
+        table face -- at which point the robot is not at the table at all and
+        the caller is right to go back and look for it.
         """
         log = self.get_logger()
         face = self._square_up_on_table()
         if face is None:
-            log.warn(f'[{self.ns}] no camera view of the table face either -- '
+            log.warn(f'[{self.ns}] no camera view of the table face -- '
                      f'cannot place on the sensors')
             return None
-        centre = self._table_centre_offset(face)
-        if centre is None:
-            log.warn(f'[{self.ns}] lidar cannot see a whole table face -- '
-                     f'cannot place on the sensors')
-            return None
-        px = face + (RT.DELIVERY_SLOT_LOCAL_Y + RT.TABLE_NEAR_FACE)
-        py = centre - RT.DELIVERY_SLOT_LOCAL_X[slot_index]
-        return (px, py)
+        frame = self._table_centre_offset(
+            face, self._near_edge_for(slot_index))
+        if frame is not None:
+            return self._slot_on_face(face, frame, slot_index)
+        log.warn(f'[{self.ns}] no usable lidar view of the face -- placing '
+                 f'slot {slot_index} STRAIGHT AHEAD, which is where its '
+                 f'standoff points, with the base\'s own lateral error left in')
+        return (face + self.SLOT_BEHIND_FACE, 0.0)
 
     def _lower_into_slot(self, slot_index, px, py):
         """Reach over the slot, set the rack down, let go and back off.
@@ -1107,11 +1387,7 @@ class DeliveryMission(Mission2Hospital):
         except Exception as exc:
             log.warn(f'[{self.ns}] retreat failed: {exc}')
         try:
-            here = self._base_xy_in_map()
-            if here is None:
-                log.warn(f'[{self.ns}] no pose to retreat from -- staying put')
-                return
-            hold = RT.delivery_hold_pose(here)
+            hold = RT.delivery_hold_pose(self._fleet_index())
             log.info(f'[{self.ns}] clearing the delivery table back to the '
                      f'holding ring at ({hold[0]:+.2f},{hold[1]:+.2f})')
             if not self._navigate_with_recovery(hold, 'the holding ring',
@@ -1358,18 +1634,19 @@ class DeliveryMission(Mission2Hospital):
         # errands were concurrent right up to the last leg and then serialised
         # completely.
         #
-        # Waiting on a reserved spot 1.4 m behind the standoff keeps both
-        # properties: the approach is still exclusive, because a robot only
-        # leaves its spot once it holds the lock, but all three trips overlap.
-        # The spots are abreast rather than in single file precisely so the
-        # grant order does not have to match the queue order -- see
-        # rack_table_layout.delivery_queue().
-        # HOLD AT A DISTANCE, WHEREVER THE APPROACH PUTS US. The target is a
-        # point on a circle of RT.DELIVERY_HOLD_RADIUS around the table, on the
-        # line from wherever this robot is now -- so it stops on its way in
-        # rather than crossing the front of the table to reach an assigned spot.
-        here = self._base_xy_in_map(default=rack_xy)
-        hold_pose = RT.delivery_hold_pose(here)
+        # Waiting on a reserved spot keeps both properties: the approach is
+        # still exclusive, because a robot only leaves its spot once it holds
+        # the lock, but all three trips overlap.
+        #
+        # THE SPOT IS THIS ROBOT'S OWN, RESERVED BY FLEET INDEX, and it is on
+        # the side the robot arrives from so nothing crosses the front of the
+        # table. It used to be DERIVED from the approach direction, which sent
+        # r1 and r3 -- both arriving from the south wing -- to two poses 0.691 m
+        # apart, against the 1.196 m two Huskys need, so the two ground into
+        # each other for the whole wait. See DELIVERY_HOLD_BEARINGS in
+        # rack_table_layout for the measurement, and for why widening the circle
+        # cannot repair a shared bearing.
+        hold_pose = RT.delivery_hold_pose(self._fleet_index())
         self.say('approaching', 'the delivery table')
         if not self._navigate_with_recovery(hold_pose, 'the holding ring'):
             # Not fatal: the robot has stopped somewhere short of the ring,
@@ -1401,7 +1678,7 @@ class DeliveryMission(Mission2Hospital):
         # It goes through _drive_to_delivery_standoff rather than
         # _navigate_with_recovery because for THIS goal Nav2 has been measured
         # to report success without moving the robot -- see there.
-        if not self._drive_to_delivery_standoff():
+        if not self._drive_to_delivery_standoff(slot):
             # RETREAT EVEN THOUGH WE NEVER ARRIVED. Whatever went wrong, the
             # robot is somewhere near the delivery table still holding its
             # rack, and the manager is about to hand the table to someone else.
@@ -1421,10 +1698,49 @@ class DeliveryMission(Mission2Hospital):
             self._retreat_from_delivery()
             return self._fail(f'dropped the {colour} rack during the carry')
         if not self.place_in_slot(slot, slot_xy):
+            # DO NOT DRIVE AWAY STILL HOLDING IT. A robot that fails here has
+            # its rack 0.8 m above the table it was meant to put it on, and the
+            # old code went straight to _fail -> _park, which CARRIED THE RACK
+            # TO THE CAR PARK. The errand is lost either way; a rack on the
+            # table and a rack on the far side of the building are not the same
+            # kind of lost, and only one of them can be tidied up by hand.
+            #
+            # This is a genuinely different attempt, not a retry of the one that
+            # just failed: it asks for the simplest pose the arm has -- straight
+            # ahead at the measured face -- which is both the most reachable
+            # point in the envelope and, because the standoff is in front of
+            # this robot's own slot, still the right place for the rack.
+            if self._put_the_rack_down(slot):
+                self.say('delivered', f'slot {slot} (set down without a slot '
+                                      f'reading)')
+                return True
             self._retreat_from_delivery()
             return self._fail(f'could not place in slot {slot}')
         self.say('delivered', f'slot {slot}')
         return True
+
+    def _put_the_rack_down(self, slot_index):
+        """Last resort: set the rack on the table in front of the robot.
+
+        Only ever called after place_in_slot has failed, and only does anything
+        if the CAMERA can still see the table face -- putting a rack down
+        somewhere the robot cannot see a table is dropping it on the floor,
+        which is worse than carrying it. Returns True if the rack is down.
+        """
+        log = self.get_logger()
+        if not self.grasp_is_holding():
+            log.info(f'[{self.ns}] nothing in the jaws -- nothing to set down')
+            return False
+        face = self._square_up_on_table()
+        if face is None:
+            log.warn(f'[{self.ns}] cannot see the table to set the rack down '
+                     f'on -- it stays in the jaws')
+            return False
+        log.warn(f'[{self.ns}] placement failed -- setting the rack down '
+                 f'straight ahead on the measured table rather than carrying '
+                 f'it away')
+        return self._lower_into_slot(slot_index, face + self.SLOT_BEHIND_FACE,
+                                     0.0)
 
     # --- clearing the floor -------------------------------------------------
     #
