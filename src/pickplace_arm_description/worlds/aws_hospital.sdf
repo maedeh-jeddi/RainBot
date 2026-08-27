@@ -1202,5 +1202,99 @@
 
 
 
+
+    <!-- THE ONE THING IN THIS WORLD THAT MOVES: a wheelchair being pushed up
+         the east wing aisle, and the attendant pushing it.
+
+         THE CHAIR IS AN <actor> TOO, which is the trick that makes this work
+         without a controller: an actor's skin does not have to be a rigged
+         character, and giving the chair the SAME trajectory as the attendant,
+         offset 0.85 m along it, keeps the two together with nothing to fall
+         out of sync. The attendant's skin is rigged and plays a walk cycle;
+         the chair's is a static mesh that is simply carried along the path.
+
+         WHY THEY ARE SEEN AT ALL. Actors carry no collision geometry, so
+         nothing in physics can hit them and nothing would stop a robot driving
+         straight through. What stops it is that the LIDAR is a RENDERING
+         sensor: it sees the skin. Measured on a standing figure, 2 of 180
+         beams returned 2.921 m off one 3.0 m away, and both costmaps take
+         /scan as a marking observation source (see nav2_params.yaml), so a
+         return becomes an obstacle cell, the inflation layer puts a 0.55 m
+         collar around it, and MPPI's CostCritic steers off it. The avoidance
+         is real; the collision is not, which is exactly the right way round
+         for testing whether the fleet gets out of the way.
+
+         WHERE IT RUNS, AND WHY THERE. Up and down x = 4.5 between y = -23.0
+         and y = -8.6, which is r2's route to collect_1 - measured against
+         r2's own recorded path, the aisle passes 0.01 m from it at
+         (4.49, -16.18). r1 and r3 never come within 9.5 m, so this puts a
+         moving obstacle in exactly one robot's way rather than disrupting the
+         whole fleet at once.
+
+         AND THERE IS ROOM TO PASS, which is the part worth checking before
+         adding a moving obstacle to a corridor rather than after. Measured
+         against maps/aws_hospital.pgm, the enclosed stretch of that aisle is
+         2.90 m wide (walls at x = 3.50 and x = 6.40). The chair is about
+         0.70 m across, so with it centred on 4.5 the gaps either side are
+         0.65 m to the west wall - too narrow for a 0.67 m Husky - and
+         1.55 m to the east one, which is not. So a robot meeting it has one
+         way past and enough room to take it.
+
+         Z IS 0 FOR BOTH. Luca's hospital skins carry their origin at the FEET
+         (measured -0.002 .. +1.612); it is Mingfei's set, used by the three
+         talking figures above, that has its origin at the hip and needs the
+         0.859 lift.
+
+         THE CHAIR IS VERSION 4, not the 2 this pair was originally written
+         against: 2 is no longer what Fuel serves, and the version in the URI
+         has to match what is in fuel_cache or the world silently goes to the
+         network for it at load time and hangs there when it is offline. -->
+    <actor name="wheelchair_pushed">
+      <skin><filename>https://fuel.gazebosim.org/1.0/openrobotics/models/patientwheelchair/4/files/meshes/PatientWheelChair.obj</filename><scale>1.0</scale></skin>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="__default__">
+          <waypoint><time>0.00</time><pose>4.500 -23.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>16.00</time><pose>4.500 -8.600 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>16.33</time><pose>4.500 -8.600 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>16.67</time><pose>4.500 -8.600 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>17.00</time><pose>4.500 -8.600 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>17.33</time><pose>4.500 -8.600 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>17.67</time><pose>4.500 -8.600 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>18.00</time><pose>4.500 -8.600 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>34.00</time><pose>4.500 -23.000 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>34.33</time><pose>4.500 -23.000 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>34.67</time><pose>4.500 -23.000 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>35.00</time><pose>4.500 -23.000 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>35.33</time><pose>4.500 -23.000 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>35.67</time><pose>4.500 -23.000 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>36.00</time><pose>4.500 -23.000 0 0 0 1.5708</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="wheelchair_attendant">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/opscrubswalk/1/files/meshes/OpScrubsWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/opscrubswalk/1/files/meshes/OpScrubsWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>4.500 -23.850 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>16.00</time><pose>4.500 -9.450 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>16.33</time><pose>4.925 -9.336 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>16.67</time><pose>5.236 -9.025 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>17.00</time><pose>5.350 -8.600 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>17.33</time><pose>5.236 -8.175 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>17.67</time><pose>4.925 -7.864 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>18.00</time><pose>4.500 -7.750 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>34.00</time><pose>4.500 -22.150 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>34.33</time><pose>4.925 -22.264 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>34.67</time><pose>5.236 -22.575 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>35.00</time><pose>5.350 -23.000 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>35.33</time><pose>5.236 -23.425 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>35.67</time><pose>4.925 -23.736 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>36.00</time><pose>4.500 -23.850 0 0 0 1.5708</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
   </world>
 </sdf>
