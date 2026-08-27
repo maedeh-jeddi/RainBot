@@ -1253,21 +1253,21 @@
       <skin><filename>https://fuel.gazebosim.org/1.0/openrobotics/models/patientwheelchair/4/files/meshes/PatientWheelChair.obj</filename><scale>1.0</scale></skin>
       <script><loop>true</loop><auto_start>true</auto_start>
         <trajectory id="0" type="__default__">
-          <waypoint><time>0.00</time><pose>4.500 -23.000 0 0 0 1.5708</pose></waypoint>
-          <waypoint><time>16.00</time><pose>4.500 -8.600 0 0 0 1.5708</pose></waypoint>
-          <waypoint><time>16.33</time><pose>4.500 -8.600 0 0 0 2.0944</pose></waypoint>
-          <waypoint><time>16.67</time><pose>4.500 -8.600 0 0 0 2.6180</pose></waypoint>
-          <waypoint><time>17.00</time><pose>4.500 -8.600 0 0 0 3.1416</pose></waypoint>
-          <waypoint><time>17.33</time><pose>4.500 -8.600 0 0 0 3.6652</pose></waypoint>
-          <waypoint><time>17.67</time><pose>4.500 -8.600 0 0 0 4.1888</pose></waypoint>
-          <waypoint><time>18.00</time><pose>4.500 -8.600 0 0 0 4.7124</pose></waypoint>
-          <waypoint><time>34.00</time><pose>4.500 -23.000 0 0 0 4.7124</pose></waypoint>
-          <waypoint><time>34.33</time><pose>4.500 -23.000 0 0 0 4.1888</pose></waypoint>
-          <waypoint><time>34.67</time><pose>4.500 -23.000 0 0 0 3.6652</pose></waypoint>
-          <waypoint><time>35.00</time><pose>4.500 -23.000 0 0 0 3.1416</pose></waypoint>
-          <waypoint><time>35.33</time><pose>4.500 -23.000 0 0 0 2.6180</pose></waypoint>
-          <waypoint><time>35.67</time><pose>4.500 -23.000 0 0 0 2.0944</pose></waypoint>
-          <waypoint><time>36.00</time><pose>4.500 -23.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>0.00</time><pose>4.350 -23.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>16.00</time><pose>4.350 -8.600 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>16.33</time><pose>4.350 -8.600 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>16.67</time><pose>4.350 -8.600 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>17.00</time><pose>4.350 -8.600 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>17.33</time><pose>4.350 -8.600 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>17.67</time><pose>4.350 -8.600 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>18.00</time><pose>4.350 -8.600 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>34.00</time><pose>4.350 -23.000 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>34.33</time><pose>4.350 -23.000 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>34.67</time><pose>4.350 -23.000 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>35.00</time><pose>4.350 -23.000 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>35.33</time><pose>4.350 -23.000 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>35.67</time><pose>4.350 -23.000 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>36.00</time><pose>4.350 -23.000 0 0 0 1.5708</pose></waypoint>
         </trajectory>
       </script>
     </actor>
@@ -1277,24 +1277,303 @@
         <interpolate_x>true</interpolate_x></animation>
       <script><loop>true</loop><auto_start>true</auto_start>
         <trajectory id="0" type="walk">
-          <waypoint><time>0.00</time><pose>4.500 -23.850 0 0 0 1.5708</pose></waypoint>
-          <waypoint><time>16.00</time><pose>4.500 -9.450 0 0 0 1.5708</pose></waypoint>
-          <waypoint><time>16.33</time><pose>4.925 -9.336 0 0 0 2.0944</pose></waypoint>
-          <waypoint><time>16.67</time><pose>5.236 -9.025 0 0 0 2.6180</pose></waypoint>
-          <waypoint><time>17.00</time><pose>5.350 -8.600 0 0 0 3.1416</pose></waypoint>
-          <waypoint><time>17.33</time><pose>5.236 -8.175 0 0 0 3.6652</pose></waypoint>
-          <waypoint><time>17.67</time><pose>4.925 -7.864 0 0 0 4.1888</pose></waypoint>
-          <waypoint><time>18.00</time><pose>4.500 -7.750 0 0 0 4.7124</pose></waypoint>
-          <waypoint><time>34.00</time><pose>4.500 -22.150 0 0 0 4.7124</pose></waypoint>
-          <waypoint><time>34.33</time><pose>4.925 -22.264 0 0 0 4.1888</pose></waypoint>
-          <waypoint><time>34.67</time><pose>5.236 -22.575 0 0 0 3.6652</pose></waypoint>
-          <waypoint><time>35.00</time><pose>5.350 -23.000 0 0 0 3.1416</pose></waypoint>
-          <waypoint><time>35.33</time><pose>5.236 -23.425 0 0 0 2.6180</pose></waypoint>
-          <waypoint><time>35.67</time><pose>4.925 -23.736 0 0 0 2.0944</pose></waypoint>
-          <waypoint><time>36.00</time><pose>4.500 -23.850 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>0.00</time><pose>4.350 -23.850 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>16.00</time><pose>4.350 -9.450 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>16.33</time><pose>4.775 -9.336 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>16.67</time><pose>5.086 -9.025 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>17.00</time><pose>5.200 -8.600 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>17.33</time><pose>5.086 -8.175 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>17.67</time><pose>4.775 -7.864 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>18.00</time><pose>4.350 -7.750 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>34.00</time><pose>4.350 -22.150 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>34.33</time><pose>4.775 -22.264 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>34.67</time><pose>5.086 -22.575 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>35.00</time><pose>5.200 -23.000 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>35.33</time><pose>5.086 -23.425 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>35.67</time><pose>4.775 -23.736 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>36.00</time><pose>4.350 -23.850 0 0 0 1.5708</pose></waypoint>
         </trajectory>
       </script>
     </actor>
 
+
+
+    <!-- FOUR PEOPLE WALKING THE EAST CORRIDOR, two down each side.
+
+         They articulate: each is a rigged skin with a walk cycle and
+         interpolate_x true, so the arms and legs advance with the distance
+         covered instead of the figure sliding along the floor. The wheelchair
+         above is the exception that proves it - its skin is a static mesh, so
+         it is carried along its path without moving a limb.
+
+         THE CORRIDOR IS 2.80 m WIDE (walls at x = 3.55 and x = 6.36) and it is
+         r2's only route to collect_1: of the three robots it is the only one
+         that uses this stretch, 19 samples of its recorded path against none
+         for r1 and r3. So the whole question is how much lane is left, and the
+         first attempt at this got it wrong in a way worth writing down.
+
+         THE TWO SIDES ARE STAGGERED IN Y, NOT FACING EACH OTHER. Put a walker
+         on each side of the same cross-section and the arithmetic is
+         0.5 + 0.5 of people and 0.67 of Husky inside 2.80 m, which leaves
+         about 0.38 m of margin in each of three gaps - and measured, it was
+         worse than the arithmetic: r2 passed one of them at 0.59 m centre to
+         centre, against the 0.585 m at which the two bodies touch. A graze.
+
+         Staggering the bands so no two overlap in y means the robot is only
+         ever alongside ONE person, and the lane is then the corridor minus one
+         body: 2.30 m, against 0.67 m of robot. The bands are 2.0 m long with
+         1.30 m of empty corridor between them, and the robot is 0.99 m long,
+         so it cannot be beside two at once even lengthwise.
+
+             doctor  W  x 3.95   y -8.0 .. -6.0      0.40 m off its wall
+             scrubs  E  x 6.00   y -4.7 .. -2.7      0.35 m off its wall
+             nurse   W  x 3.95   y -1.4 ..  0.6      0.40 m off its wall
+             visitor E  x 6.00   y  1.9 ..  3.9      0.35 m off its wall
+
+         AND THEY KEEP OUT OF THE WHEELCHAIR'S HALF. The chair patrols
+         y = -23.0 to -8.6 and turns there; these four stay north of y = -8.0.
+         Chair plus a walker in one cross-section would leave 0.80 m, and a
+         robot whose centre then has a 0.13 m band to thread is one that stops
+         rather than one that squeezes past. Meeting the traffic in sequence is
+         a test the fleet can pass; meeting all of it at one point is a wall.
+
+         0.55 m/s is a stroll rather than a march, which keeps each figure in
+         the robot's way long enough to matter without turning the corridor
+         into a metronome. Each turns on the spot at the end of its stretch
+         over a second rather than moon-walking back. Luca's skins carry their
+         origin at the FEET, so z = 0; it is Mingfei's set, used by the three
+         talking figures above, that sits at the hip and needs the 0.859 lift. -->
+
+    <actor name="walker_doctor">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/doctorfemalewalk/1/files/meshes/DoctorFemaleWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/doctorfemalewalk/1/files/meshes/DoctorFemaleWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>3.830 -8.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.64</time><pose>3.830 -6.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.97</time><pose>3.830 -6.000 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>4.30</time><pose>3.830 -6.000 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>4.64</time><pose>3.830 -6.000 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.27</time><pose>3.830 -8.000 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.61</time><pose>3.830 -8.000 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>8.94</time><pose>3.830 -8.000 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>9.27</time><pose>3.830 -8.000 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="walker_scrubs">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/opscrubswalk/1/files/meshes/OpScrubsWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/opscrubswalk/1/files/meshes/OpScrubsWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>6.120 -4.700 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.64</time><pose>6.120 -2.700 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.97</time><pose>6.120 -2.700 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>4.30</time><pose>6.120 -2.700 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>4.64</time><pose>6.120 -2.700 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.27</time><pose>6.120 -4.700 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.61</time><pose>6.120 -4.700 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>8.94</time><pose>6.120 -4.700 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>9.27</time><pose>6.120 -4.700 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="walker_nurse">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/nursefemalewalk/1/files/meshes/NurseFemaleWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/nursefemalewalk/1/files/meshes/NurseFemaleWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>3.830 -1.400 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.64</time><pose>3.830 0.600 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.97</time><pose>3.830 0.600 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>4.30</time><pose>3.830 0.600 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>4.64</time><pose>3.830 0.600 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.27</time><pose>3.830 -1.400 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.61</time><pose>3.830 -1.400 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>8.94</time><pose>3.830 -1.400 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>9.27</time><pose>3.830 -1.400 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="walker_visitor">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/visitorkidwalk/1/files/meshes/VisitorKidWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/visitorkidwalk/1/files/meshes/VisitorKidWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>6.120 1.900 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.64</time><pose>6.120 3.900 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.97</time><pose>6.120 3.900 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>4.30</time><pose>6.120 3.900 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>4.64</time><pose>6.120 3.900 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.27</time><pose>6.120 1.900 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.61</time><pose>6.120 1.900 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>8.94</time><pose>6.120 1.900 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>9.27</time><pose>6.120 1.900 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <!-- THE SAME TRAFFIC AGAIN, IN THE WEST CORRIDOR: four people walking, and
+         a second wheelchair with its attendant.
+
+         WHY HERE. The east corridor's traffic is only ever met by r2, because
+         r2 is the only robot that goes that way. r1 and r3 both run the WEST
+         corridor instead - r1 from y = +5.7 down to about -7 on its way to
+         collect_0, r3 the whole length down to -22 for collect_2 - and until
+         now there was nothing in it. The three talking figures are outside it
+         (x = -9.62 and x = -1.0 or so), so this really was the empty one.
+
+         IT IS THE SAME CORRIDOR MIRRORED: 2.80 m wide, walls at x = -6.45 and
+         x = -3.65, against the east one's 3.55 and 6.36. So the layout is
+         mirrored too, and for the same measured reasons.
+
+         THE WALKERS ARE STAGGERED IN Y, never facing each other across the
+         corridor. Two on each side, 2.0 m stretches with 1.30 m of empty
+         corridor between them, so a robot is only ever alongside ONE of them
+         and the lane is the corridor minus one body - 2.30 m, against 0.67 m
+         of Husky. Facing them off across the corridor was tried on the east
+         side and measured 0.59 m of clearance against the 0.585 m at which the
+         two bodies touch; see the note there.
+
+             doctor  W  x -6.10   y -8.0 .. -6.0     0.40 m to the nearest thing
+             scrubs  E  x -4.00   y -4.7 .. -2.7     0.53 m
+             nurse   W  x -6.10   y -1.4 ..  0.6     0.40 m
+             visitor E  x -4.00   y  1.9 ..  3.9     0.50 m
+
+         THE WHEELCHAIR TAKES THE SOUTHERN HALF, y = -22.0 to -10.0, which only
+         r3 drives. That keeps it clear of the walkers' stretches by 2 m, for
+         the reason the east corridor's note gives: chair plus a walker in one
+         cross-section leaves a gap a robot stops in front of rather than
+         drives through. Sitting at x = -5.50 it leaves 0.60 m on its west side
+         and 1.50 m on its east, so there is one way past and it is a real one.
+
+         The attendant walks 0.85 m behind the chair and swings round it at
+         each end rather than reversing through it, which is the one thing this
+         pair does that the east pair does not - the east chair turns on the
+         spot with the attendant tracing the same arc, and it reads as the
+         attendant walking through the chair from some angles. -->
+
+    <actor name="walker2_doctor">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/doctorfemalewalk/1/files/meshes/DoctorFemaleWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/doctorfemalewalk/1/files/meshes/DoctorFemaleWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>-6.220 -8.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.64</time><pose>-6.220 -6.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.97</time><pose>-6.220 -6.000 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>4.30</time><pose>-6.220 -6.000 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>4.64</time><pose>-6.220 -6.000 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.27</time><pose>-6.220 -8.000 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.61</time><pose>-6.220 -8.000 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>8.94</time><pose>-6.220 -8.000 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>9.27</time><pose>-6.220 -8.000 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="walker2_scrubs">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/opscrubswalk/1/files/meshes/OpScrubsWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/opscrubswalk/1/files/meshes/OpScrubsWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>-3.880 -4.700 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.64</time><pose>-3.880 -2.700 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.97</time><pose>-3.880 -2.700 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>4.30</time><pose>-3.880 -2.700 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>4.64</time><pose>-3.880 -2.700 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.27</time><pose>-3.880 -4.700 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.61</time><pose>-3.880 -4.700 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>8.94</time><pose>-3.880 -4.700 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>9.27</time><pose>-3.880 -4.700 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="walker2_nurse">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/nursefemalewalk/1/files/meshes/NurseFemaleWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/nursefemalewalk/1/files/meshes/NurseFemaleWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>-6.220 -1.400 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.64</time><pose>-6.220 0.600 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.97</time><pose>-6.220 0.600 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>4.30</time><pose>-6.220 0.600 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>4.64</time><pose>-6.220 0.600 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.27</time><pose>-6.220 -1.400 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.61</time><pose>-6.220 -1.400 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>8.94</time><pose>-6.220 -1.400 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>9.27</time><pose>-6.220 -1.400 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="walker2_visitor">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/visitorkidwalk/1/files/meshes/VisitorKidWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/visitorkidwalk/1/files/meshes/VisitorKidWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>-3.880 1.900 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.64</time><pose>-3.880 3.900 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>3.97</time><pose>-3.880 3.900 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>4.30</time><pose>-3.880 3.900 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>4.64</time><pose>-3.880 3.900 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.27</time><pose>-3.880 1.900 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>8.61</time><pose>-3.880 1.900 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>8.94</time><pose>-3.880 1.900 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>9.27</time><pose>-3.880 1.900 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="wheelchair2_pushed">
+      <skin><filename>https://fuel.gazebosim.org/1.0/openrobotics/models/patientwheelchair/4/files/meshes/PatientWheelChair.obj</filename><scale>1.0</scale></skin>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="__default__">
+          <waypoint><time>0.00</time><pose>-5.500 -22.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>13.33</time><pose>-5.500 -10.000 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>13.67</time><pose>-5.500 -10.000 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>14.00</time><pose>-5.500 -10.000 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>14.33</time><pose>-5.500 -10.000 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>14.67</time><pose>-5.500 -10.000 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>15.00</time><pose>-5.500 -10.000 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>15.33</time><pose>-5.500 -10.000 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>28.67</time><pose>-5.500 -22.000 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>29.00</time><pose>-5.500 -22.000 0 0 0 5.2360</pose></waypoint>
+          <waypoint><time>29.33</time><pose>-5.500 -22.000 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>29.67</time><pose>-5.500 -22.000 0 0 0 6.2832</pose></waypoint>
+          <waypoint><time>30.00</time><pose>-5.500 -22.000 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>30.33</time><pose>-5.500 -22.000 0 0 0 7.3304</pose></waypoint>
+          <waypoint><time>30.67</time><pose>-5.500 -22.000 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+    <actor name="wheelchair2_attendant">
+      <skin><filename>https://fuel.gazebosim.org/1.0/luca/models/opscrubswalk/1/files/meshes/OpScrubsWalk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>https://fuel.gazebosim.org/1.0/luca/models/opscrubswalk/1/files/meshes/OpScrubsWalk.dae</filename><scale>1.0</scale>
+        <interpolate_x>true</interpolate_x></animation>
+      <script><loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk">
+          <waypoint><time>0.00</time><pose>-5.500 -22.850 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>13.33</time><pose>-5.500 -10.850 0 0 0 1.5708</pose></waypoint>
+          <waypoint><time>13.67</time><pose>-5.075 -10.736 0 0 0 2.0944</pose></waypoint>
+          <waypoint><time>14.00</time><pose>-4.764 -10.425 0 0 0 2.6180</pose></waypoint>
+          <waypoint><time>14.33</time><pose>-4.650 -10.000 0 0 0 3.1416</pose></waypoint>
+          <waypoint><time>14.67</time><pose>-4.764 -9.575 0 0 0 3.6652</pose></waypoint>
+          <waypoint><time>15.00</time><pose>-5.075 -9.264 0 0 0 4.1888</pose></waypoint>
+          <waypoint><time>15.33</time><pose>-5.500 -9.150 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>28.67</time><pose>-5.500 -21.150 0 0 0 4.7124</pose></waypoint>
+          <waypoint><time>29.00</time><pose>-5.075 -21.264 0 0 0 5.2360</pose></waypoint>
+          <waypoint><time>29.33</time><pose>-4.764 -21.575 0 0 0 5.7596</pose></waypoint>
+          <waypoint><time>29.67</time><pose>-4.650 -22.000 0 0 0 6.2832</pose></waypoint>
+          <waypoint><time>30.00</time><pose>-4.764 -22.425 0 0 0 6.8068</pose></waypoint>
+          <waypoint><time>30.33</time><pose>-5.075 -22.736 0 0 0 7.3304</pose></waypoint>
+          <waypoint><time>30.67</time><pose>-5.500 -22.850 0 0 0 7.8540</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
   </world>
 </sdf>

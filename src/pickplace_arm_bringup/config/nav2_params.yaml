@@ -525,7 +525,33 @@ local_costmap:
         # what was slowing it down -- and clearance around the furniture the
         # lowered scanner can finally see is the whole point of that scanner.
         # Reverted rather than kept.
-        inflation_radius: 0.55
+        # 0.75, UP FROM 0.55, AND 0.55 WAS BELOW THE ROBOT'S OWN RADIUS.
+        #
+        # The A200's circumscribed radius is 0.598 m (ROBOT_FOOTPRINT in
+        # fleet_layout). An inflation radius under that means the collar around
+        # an obstacle does not cover the circle the robot sweeps: a marked cell
+        # stops costing anything while the robot's own corner is still over it.
+        #
+        # It surfaced the moment the corridors had people in them. Measured over
+        # a full mission with pedestrians in both corridors, closest approach of
+        # a robot's centre to a walking figure's centre:
+        #
+        #     r1 - west doctor  0.51 m     r1 - west nurse  0.56 m
+        #     r2 - east chair   0.58 m
+        #
+        # against the 0.585 m at which a 0.67 m robot and a 0.5 m person
+        # overlap. Three real grazes. Moving the figures nearer their walls
+        # could not fix it: the corridor is 2.80 m and the robots were hugging
+        # one side, so 0.10 m of figure buys 0.10 m of gap against a shortfall
+        # the robot's own line was creating.
+        #
+        # 0.75 puts the collar 0.15 m outside the circumscribed radius, so the
+        # robot is pushed off a marked cell before its corner reaches it. This
+        # is cost and not lethality - what a planner refuses to enter is the
+        # INSCRIBED zone at 0.335 m, which this does not touch - so the tight
+        # places already in this building stay traversable; they stop being
+        # free.
+        inflation_radius: 0.75
       always_send_full_costmap: true
 
 global_costmap:
@@ -574,7 +600,33 @@ global_costmap:
         # only adds cost. The delivery standoff sits 0.70 m from the table's
         # lethal cells and stays traversable; measured on the running stack, the
         # cost there is 0.
-        inflation_radius: 0.55
+        # 0.75, UP FROM 0.55, AND 0.55 WAS BELOW THE ROBOT'S OWN RADIUS.
+        #
+        # The A200's circumscribed radius is 0.598 m (ROBOT_FOOTPRINT in
+        # fleet_layout). An inflation radius under that means the collar around
+        # an obstacle does not cover the circle the robot sweeps: a marked cell
+        # stops costing anything while the robot's own corner is still over it.
+        #
+        # It surfaced the moment the corridors had people in them. Measured over
+        # a full mission with pedestrians in both corridors, closest approach of
+        # a robot's centre to a walking figure's centre:
+        #
+        #     r1 - west doctor  0.51 m     r1 - west nurse  0.56 m
+        #     r2 - east chair   0.58 m
+        #
+        # against the 0.585 m at which a 0.67 m robot and a 0.5 m person
+        # overlap. Three real grazes. Moving the figures nearer their walls
+        # could not fix it: the corridor is 2.80 m and the robots were hugging
+        # one side, so 0.10 m of figure buys 0.10 m of gap against a shortfall
+        # the robot's own line was creating.
+        #
+        # 0.75 puts the collar 0.15 m outside the circumscribed radius, so the
+        # robot is pushed off a marked cell before its corner reaches it. This
+        # is cost and not lethality - what a planner refuses to enter is the
+        # INSCRIBED zone at 0.335 m, which this does not touch - so the tight
+        # places already in this building stay traversable; they stop being
+        # free.
+        inflation_radius: 0.75
       always_send_full_costmap: true
 
 planner_server:
